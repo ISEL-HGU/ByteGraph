@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>ByteGraph Viewer</title>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans KR', sans-serif; }
+    #toolbar {
+      display: flex; gap: 12px; align-items: center; padding: 10px;
+      border-bottom: 1px solid #ddd; background: #f8f8f8;
+    }
+    #cy { position: absolute; top: 54px; bottom: 0; left: 0; right: 0; }
+    .badge { padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+    
+    /* 뱃지(버튼) 색상 수정 */
+    .cfg { background: #1976d2; color: #fff; } 
+    .ex  { background: #9c27b0; color: #fff; }
+    .dfg { background: #2e7d32; color: #fff; } 
+    .cdg { background: #d32f2f; color: #fff; } /* 빨강 */
+    .ddg { background: #fbc02d; color: #000; } /* 노랑 (검정 글씨가 가독성이 좋음) */
+    
+    label { user-select:none; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    select, button, input[type="checkbox"] { font-size: 14px; }
+    #legend { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  </style>
+  <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="openBtn">JSON 열기</button>
+    <input type="file" id="fileInput" accept=".json" style="display:none"/>
+    <label>메서드: <select id="methodSelect"></select></label>
+    <label><input type="checkbox" id="toggleCFG" checked> <span class="badge cfg">CFG</span></label>
+    <label><input type="checkbox" id="toggleEX" checked> <span class="badge ex">EX</span></label>
+    <label><input type="checkbox" id="toggleDFG" checked> <span class="badge dfg">DFG</span></label>
+    <label><input type="checkbox" id="toggleCDG" checked> <span class="badge cdg">CDG</span></label>
+    <label><input type="checkbox" id="toggleDDG" checked> <span class="badge ddg">DDG</span></label>
+    <button id="layoutBtn">레이아웃: CoSE</button>
+  </div>
+  <div id="cy"></div>
+
+  <script>
+    let cy = cytoscape({
+      container: document.getElementById('cy'),
+      style: [
+        { selector: 'node',
+          style: {
+            'background-color': '#455A64',
+            'label': 'data(label)',
+            'color': '#fff',
+            'text-wrap': 'wrap',
+            'text-max-width': 200,
+            'font-size': 10,
+            'text-halign': 'center',
+            'text-valign': 'center',
+            'width': 'label',
+            'height': 'label',
+            'padding': '8px',
+            'shape': 'round-rectangle',
+            'border-color': '#78909C',
+            'border-width': 1
+          }
+        },
+        { selector: 'edge',
+          style: {
+            'curve-style': 'bezier',
+            'width': 2,
+            'arrow-scale': 1.2,
+            'target-arrow-shape': 'triangle',
+            'label': 'data(type)',
+            'font-size': 8,
+            'text-background-color': '#fff',
+            'text-background-opacity': 0.8,
+            'text-background-shape': 'round-rectangle'
+          }
+        },
+        /* 그래프 선 색상을 뱃지 색상과 통일 */
+        { selector: 'edge[type = "cfg"]', style: {'line-color': '#1976d2', 'target-arrow-color': '#1976d2'} },
+        { selector: 'edge[type = "ex"]',  style: {'line-color': '#9c27b0', 'target-arrow-color': '#9c27b0'} },
+        { selector: 'edge[type = "dfg"]', style: {'line-color': '#2e7d32', 'target-arrow-color': '#2e7d32'} },
+        { selector: 'edge[type = "cdg"]', style: {'line-color': '#d32f2f', 'target-arrow-color': '#d32f2f'} },
+        { selector: 'edge[type = "ddg"]', style: {'line-color': '#fbc02d', 'target-arrow-color': '#fbc02d'} }
+      ],
+      layout: { name: 'cose', fit: true, padding: 30 }
+    });
+
+    let raw = null;
+    let methods = [];
+    const methodSelect = document.getElementById('methodSelect');
+
+    document.getElementById('openBtn').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('fileInput').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      const text = await file.text();
+      raw = JSON.parse(text);
+      methods = raw.methods || [];
+      fillMethodSelect();
+      if (methods.length) renderMethod(methods[0]);
+    };
+
+    function fillMethodSelect() {
+      methodSelect.innerHTML = '';
+      methods.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.method;
+        opt.textContent = m.method;
+        methodSelect.appendChild(opt);
+      });
+      methodSelect.onchange = () => {
+        const m = methods.find(x => x.method === methodSelect.value);
+        if (m) renderMethod(m);
+      };
+    }
+
+    function renderMethod(m) {
+      const nodes = m.nodes || [];
+      const edges = m.edges || { cfg:[], ex:[], dfg:[], cdg:[], ddg:[] };
+      const elems = [];
+
+      nodes.forEach(n => {
+        const id = String(n.offset);
+        const hex = n.hex || '';
+        const mnem = n.mnemonic || '';
+        const ops = (n.operands || '');
+        const label = `0x${n.offset.toString(16).padStart(4,'0').toUpperCase()}: ${hex}\n${mnem}${ops ? ' ' + ops : ''}`;
+        elems.push({ data: { id, label, offset: n.offset, mnemonic: mnem, hex, operands: ops } });
+      });
+
+      const pushEdges = (list, type) => {
+        (list || []).forEach(e => {
+          const src = String(e.src), dst = String(e.dst);
+          elems.push({ data: { id: `${type}:${src}->${dst}`, source: src, target: dst, type } });
+        });
+      };
+
+      pushEdges(edges.cfg, 'cfg');
+      pushEdges(edges.ex,  'ex');
+      pushEdges(edges.dfg, 'dfg');
+      pushEdges(edges.cdg, 'cdg');
+      pushEdges(edges.ddg, 'ddg');
+
+      cy.elements().remove();
+      cy.add(elems);
+      applyEdgeToggles();
+      cy.layout({ name: currentLayout, fit: true, padding: 30, animate: true }).run();
+
+      cy.on('tap', 'node', (evt) => {
+        const d = evt.target.data();
+        alert(`offset: 0x${d.offset.toString(16).padStart(4,'0').toUpperCase()}\nmnemonic: ${d.mnemonic}\nhex: ${d.hex}\noperands: ${d.operands || ''}`);
+      });
+    }
+
+    const checkIds = ['toggleCFG','toggleEX','toggleDFG','toggleCDG','toggleDDG'];
+    checkIds.forEach(id => document.getElementById(id).onchange = applyEdgeToggles);
+
+    function applyEdgeToggles() {
+      const show = {
+        cfg: document.getElementById('toggleCFG').checked,
+        ex:  document.getElementById('toggleEX').checked,
+        dfg: document.getElementById('toggleDFG').checked,
+        cdg: document.getElementById('toggleCDG').checked,
+        ddg: document.getElementById('toggleDDG').checked
+      };
+      ['cfg','ex','dfg','cdg','ddg'].forEach(t => {
+        cy.$(`edge[type = "${t}"]`).style('display', show[t] ? 'element' : 'none');
+      });
+    }
+
+    let currentLayout = 'cose';
+    document.getElementById('layoutBtn').onclick = () => {
+      currentLayout = (currentLayout === 'cose') ? 'breadthfirst' : 'cose';
+      cy.layout({ name: currentLayout, fit: true, padding: 30, animate: true }).run();
+      document.getElementById('layoutBtn').textContent = `레이아웃: ${currentLayout === 'cose' ? 'CoSE' : 'Breadthfirst'}`;
+    };
+  </script>
+</body>
+</html>
