@@ -1,13 +1,13 @@
 # ByteGraph: Bytecode-Level Semantic Graph Constructor
 
-**ByteGraph**는 자바 바이트코드(.class)로부터 **16진수(Hex) 기반의 물리적 정보**와 **고수준의 의미론적 의존성**을 동시에 추출하여 통합된 그래프 모델을 생성하는 분석 도구입니다 [1-3].
+**ByteGraph**는 자바 바이트코드(.class)로부터 **16진수(Hex) 기반의 물리적 정보**와 **고수준의 의미론적 의존성**을 동시에 추출하여 통합된 그래프 모델을 생성하는 분석 도구입니다.
 
 ## 1. 핵심 기능 (Key Features)
 
-*   **물리적 정보 보존 (BCEL):** Apache BCEL을 통해 명령어별 오프셋(Offset), 니모닉(Mnemonic), 피연산자(Operands) 및 실제 **16진수 바이트열(Hex)** 정보를 추출합니다 [1, 4, 5].
-*   **의미론적 분석 (WALA):** IBM WALA를 활용하여 SSA(Static Single Assignment) 기반의 중간 표현(IR)을 생성하고, **데이터 흐름(DFG), 제어 의존성(CDG), 데이터 의존성(DDG)**을 정밀 분석합니다 [1, 6-8].
-*   **오프셋 기반 정밀 매핑:** WALA의 분석 결과를 BCEL의 바이트코드 오프셋으로 투영(Mapping)하여 정보 손실 없는 통합 모델을 제공합니다 [6, 9].
-*   **통합 JSON 출력:** 분석된 노드와 5가지 엣지 유형(CFG, EX, DFG, CDG, DDG)을 하나의 JSON 파일로 직렬화하여 출력합니다 [7, 10, 11].
+*   **물리적 정보 보존 (BCEL):** Apache BCEL을 통해 명령어별 오프셋(Offset), 니모닉(Mnemonic), 피연산자(Operands) 및 실제 **16진수 바이트열(Hex)** 정보를 추출합니다.
+*   **의미론적 분석 (WALA):** IBM WALA를 활용하여 SSA(Static Single Assignment) 기반의 중간 표현(IR)을 생성하고, **데이터 흐름(DFG), 제어 의존성(CDG), 데이터 의존성(DDG)**을 정밀 분석합니다.
+*   **오프셋 기반 정밀 매핑:** WALA의 분석 결과를 BCEL의 바이트코드 오프셋으로 투영(Mapping)하여 정보 손실 없는 통합 모델을 제공합니다.
+*   **통합 JSON 출력:** 분석된 노드와 5가지 엣지 유형(CFG, EX, DFG, CDG, DDG)을 하나의 JSON 파일로 직렬화하여 출력합니다.
 
 ## 2. 시스템 아키텍처 (Architecture)
 
