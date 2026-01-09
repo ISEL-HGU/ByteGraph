@@ -116,26 +116,20 @@ public class WalaIRProjector {
         }
 
         // === Primordial(JDK 8) === : rt/jce/jsse(+ sunjce_provider)
-        String java8 = System.getenv("JAVA8_HOME");
-        if (java8 == null || java8.isBlank())
-            throw new IllegalStateException("JAVA8_HOME must point to JDK/JRE 8");
         String[] relPaths = {
-                "jre\\lib\\rt.jar", "lib\\rt.jar",
-                "jre\\lib\\jce.jar", "lib\\jce.jar",
-                "jre\\lib\\jsse.jar", "lib\\jsse.jar",
-                "jre\\lib\\ext\\sunjce_provider.jar", "lib\\ext\\sunjce_provider.jar"
+                "lib\\rt.jar", "lib\\jce.jar", "lib\\jsse.jar", "lib\\sunjce_provider.jar"
         };
         boolean hasRt=false, hasJce=false;
         for (String rel : relPaths) {
-            File f = new File(java8 + File.separator + rel);
+            File f = new File(rel);
             if (f.exists()) {
                 scope.addToScope(ClassLoaderReference.Primordial, new java.util.jar.JarFile(f));
                 if (rel.endsWith("rt.jar")) hasRt = true;
                 if (rel.endsWith("jce.jar")) hasJce = true;
             }
         }
-        if (!hasRt)  throw new IllegalStateException("rt.jar not found under JAVA8_HOME");
-        if (!hasJce) throw new IllegalStateException("jce.jar not found under JAVA8_HOME");
+        if (!hasRt)  throw new IllegalStateException("rt.jar not found");
+        if (!hasJce) throw new IllegalStateException("jce.jar not found");
 
         return scope;
     }

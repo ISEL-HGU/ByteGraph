@@ -31,8 +31,8 @@ public class WalaSession {
         this.cache = cache; this.builder = builder; this.cg = cg; this.pa = pa;
     }
 
-    /** 루트(classpath root)와 JAVA8_HOME으로 세션을 1회 초기화 */
-    public static WalaSession initOnce(String classpathRoot, String java8Home) throws Exception {
+    /** 루트(classpath root)로 세션을 1회 초기화 */
+    public static WalaSession initOnce(String classpathRoot) throws Exception {
         AnalysisScope scope = AnalysisScope.createJavaAnalysisScope();
 
         // Application: 루트 폴더 전체를 클래스패스로 추가
@@ -40,7 +40,7 @@ public class WalaSession {
                 .addClassPathToScope(classpathRoot, scope, ClassLoaderReference.Application);
 
         // Primordial: rt/jce/jsse(+ sunjce_provider) 추가
-        addPrimordialJars(scope, java8Home);
+        addPrimordialJars(scope);
 
         // ClassHierarchy
         IClassHierarchy cha = com.ibm.wala.ipa.cha.ClassHierarchyFactory.make(scope);
@@ -63,23 +63,20 @@ public class WalaSession {
         return new WalaSession(scope, cha, options, cache, builder, cg, pa);
     }
 
-    private static void addPrimordialJars(AnalysisScope scope, String java8) throws Exception {
+    private static void addPrimordialJars(AnalysisScope scope) throws Exception {
         String[] rels = {
-                "jre\\lib\\rt.jar", "lib\\rt.jar",
-                "jre\\lib\\jce.jar", "lib\\jce.jar",
-                "jre\\lib\\jsse.jar", "lib\\jsse.jar",
-                "jre\\lib\\ext\\sunjce_provider.jar", "lib\\ext\\sunjce_provider.jar"
+                "lib\\rt.jar", "lib\\jce.jar", "lib\\jsse.jar", "lib\\sunjce_provider.jar"
         };
         boolean hasRt=false, hasJce=false;
         for (String rel : rels) {
-            File jar = new File(java8 + File.separator + rel);
+            File jar = new File(rel);
             if (jar.exists()) {
                 scope.addToScope(ClassLoaderReference.Primordial, new java.util.jar.JarFile(jar));
                 if (rel.endsWith("rt.jar")) hasRt = true;
                 if (rel.endsWith("jce.jar")) hasJce = true;
             }
         }
-        if (!hasRt)  throw new IllegalStateException("rt.jar not found under JAVA8_HOME=" + java8);
-        if (!hasJce) throw new IllegalStateException("jce.jar not found under JAVA8_HOME=" + java8);
+        if (!hasRt)  throw new IllegalStateException("rt.jar not found");
+        if (!hasJce) throw new IllegalStateException("jce.jar not found");
     }
 }
