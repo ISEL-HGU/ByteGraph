@@ -8,8 +8,8 @@ public class BcelClassIntrospector {
 
     /** 메서드 시그니처(name + desc) */
     public static class MethodSig {
-        public final String name;    // 예: "doStuff", "<init>", "main"
-        public final String desc;    // 예: "()V", "([Ljava/lang/String;)V"
+        public final String name;
+        public final String desc;
         public MethodSig(String name, String desc) { this.name = name; this.desc = desc; }
         @Override public String toString() { return name + desc; }
         @Override public boolean equals(Object o){

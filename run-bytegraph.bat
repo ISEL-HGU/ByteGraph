@@ -18,7 +18,7 @@ set "CLASS_PATH=%~1"
 
 REM 3) Run Gradle (must be executed in project root)
 echo [INFO] Running Gradle...
-gradle run --args="%CLASS_PATH%" -Dfile.encoding=UTF-8
+gradle run --console=plain -q --args="%CLASS_PATH%" -Dfile.encoding=UTF-8
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (

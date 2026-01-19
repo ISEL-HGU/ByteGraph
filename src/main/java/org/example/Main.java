@@ -39,23 +39,70 @@ public class Main {
             // [2차 시도 - Healing] 실패한 파일 재시도
             if (!failedFiles.isEmpty()) {
                 System.out.println("\n>>> [Pass 2] Healing session starting...");
+                // 1차 시도 결과 스냅샷 저장
+                Set<String> pass1Exclusions = new HashSet<>(diagnosis.getPackagesToUnblock());
+                Set<String> pass1Missing = new HashSet<>(diagnosis.getMissingLibraries());
+
 
                 // 1차 시도에서 수집된 에러를 바탕으로 해결책이 있는지 확인
                 if (diagnosis.hasSuggestions()) {
-                    diagnosis.printReport(); // 사용자에게 필요한 라이브러리 리포트 출력
 
                     // 차단 해제가 필요한 패키지가 있다면 2차 시도 진행
                     if (!diagnosis.getPackagesToUnblock().isEmpty()) {
                         System.out.println(">>> Retrying with dynamic unblocking for: " + diagnosis.getPackagesToUnblock());
+                        diagnosis.clear();
 
                         WalaSession healingSession = WalaSession.init(
                                 appClassPath,
-                                diagnosis.getPackagesToUnblock(),
+                                pass1Exclusions,
                                 Collections.emptyList() // 필요 시 외부 라이브러리 경로 추가 가능
                         );
 
+                        // 2차 시도
                         Set<Path> pass2Failed = new HashSet<>();
                         engine.run(healingSession, new ArrayList<>(failedFiles), pass2Failed);
+                        System.out.println("\n" + "=".repeat(20) + " FINAL HEALING REPORT " + "=".repeat(20));
+
+                        // 1. 해결된 항목 (Pass 1에는 있었으나 Pass 2에서는 발생하지 않음)
+                        Set<String> resolvedExclusions = new HashSet<>(pass1Exclusions);
+                        resolvedExclusions.removeAll(diagnosis.getPackagesToUnblock());
+
+                        if (!resolvedExclusions.isEmpty()) {
+                            System.out.println("[RESOLVED] These exclusions no longer cause errors:");
+                            resolvedExclusions.forEach(s -> System.out.println(" + " + s));
+                        }
+
+                        // 2. 여전히 해결되지 않은 항목 (Pass 2에서도 다시 수집됨)
+                        if (!diagnosis.getPackagesToUnblock().isEmpty() || !diagnosis.getMissingLibraries().isEmpty()) {
+                            System.out.println("\n[UNRESOLVED] Still causing issues after healing session:");
+
+                            // 클래스 -> 라이브러리 매칭 출력
+                            if (!diagnosis.getClassToMissingLibMap().isEmpty()) {
+                                System.out.println(" --- Missing Dependency Mapping ---");
+                                diagnosis.getClassToMissingLibMap().forEach((targetClass, libs) -> {
+                                    System.out.println(" * Target: " + targetClass + " -> Needs: " + libs);
+                                });
+                            }
+
+                            if (!diagnosis.getPackagesToUnblock().isEmpty()) {
+                                System.out.println(" - Persistent Exclusions: " + diagnosis.getPackagesToUnblock());
+                            }
+
+                            // 3. 수동 해결 가이드 출력
+                            System.out.println("\n" + "-".repeat(60));
+                            System.out.println(">>> Manual Fix Guide");
+                            System.out.println("-".repeat(60));
+                            System.out.println("1) Library Issue: Add the JAR files identified in the mapping above to your classpath.");
+                            System.out.println("2) Scope Exclusion Issue: Check whether there is a comment (#) in front of the package in 'exclusions.txt' and remove it if necessary.");
+                            System.out.println("3) Environment Check: Ensure that 'rt.jar' and 'jce.jar' are available in the [root folder]/lib/ directory of this repository. Verify that these files have not been deleted.");
+
+                            System.out.println("-".repeat(60));
+                        }
+
+                        if (pass2Failed.isEmpty()) {
+                            System.out.println("\n>>> ALL FAILURES SUCCESSFULLY HEALED!");
+                        }
+                        System.out.println("=".repeat(60) + "\n");
                     }
                 } else {
                     System.out.println(">>> No clear healing path found for remaining failures.");
