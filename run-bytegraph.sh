@@ -9,19 +9,19 @@ set -euo pipefail
 # ============================================================
 
 # 0) Check if the required argument is provided
-if [[ $# -lt 1 ]]; then
-    echo "[ERROR] Target class path is required."
-    echo "Usage: $0 /absolute/path/to/your/classes"
-    exit 1
+if [ -z "$1" ]; then
+  echo "[ERROR] .class file path is required."
+  echo "Usage: $(basename "$0") -t /path/to/MyClass.class [-a analyzeMode] [-d dfgMode] [-l libPath]"
+  exit 1
 fi
 
-CLASS_PATH="$1"
+echo "[INFO] Running Gradle..."
 
 echo "[INFO] Initializing ByteGraph Analysis..."
 echo "[INFO] Class Path: $CLASS_PATH"
 
 # 1) Execute Gradle task
-gradle run --console=plain -q --args="$CLASS_PATH" -Dfile.encoding=UTF-8
+gradle run --console=plain -q --args="$*" -Dfile.encoding=UTF-8
 
 # 2) Capture and check the exit code
 RC=$?

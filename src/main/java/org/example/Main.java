@@ -1,14 +1,11 @@
 package org.example;
 
-import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class Main {
-    private static final Set<String> VALID_DDG_OPTIONS = Set.of("DDG", "NO_DDG");
-    private static final Set<String> VALID_DFG_MODES = Set.of("DATA_STACK", "DATA_LOCAL", "WALA_ONLY");
-    private static final Path EXCLUSIONS_PATH = Paths.get("exclusions.txt");
+     private static final Path EXCLUSIONS_PATH = Paths.get("exclusions.txt");
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
@@ -16,13 +13,53 @@ public class Main {
             System.exit(1);
         }
 
-        String mode = (args.length > 1) ? args[1].toUpperCase() : "DATA_LOCAL";
-        String ddgOption = (args.length > 2) ? args[2].toUpperCase() : "DDG";
-        Path targetPath = Paths.get(args[0]).toAbsolutePath();
-        String appClassPath = Files.isDirectory(targetPath) ? targetPath.toString() : targetPath.getParent().toString();
+        // 1. set options
+        String targetPathStr = null;
+        String dfgMode = "DATA_SEMANTIC";
+        String analyzeMode = "ALL";
+        List<String> extraLibs = new ArrayList<>();
 
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "-t":
+                    if (i + 1 < args.length) targetPathStr = args[++i];
+                    break;
+                case "-d":
+                    if (i + 1 < args.length) dfgMode = args[++i].toUpperCase();
+                    break;
+                case "-a":
+                    if (i + 1 < args.length) analyzeMode = args[++i].toUpperCase();
+                    break;
+                case "-l":
+                    if (i + 1 < args.length) extraLibs.add(args[++i]);
+                    break;
+                default:
+                    if (targetPathStr == null && !args[i].startsWith("-")) {
+                        targetPathStr = args[i];
+                    }
+                    break;
+            }
+        }
+
+        if (targetPathStr == null) {
+            printUsage();
+            return;
+        }
+
+        if (!Set.of("ALL", "FLOW_ONLY", "DEPENDENCY_ONLY").contains(analyzeMode)) {
+            System.err.println("Invalid graph mode option. Use ALL, FLOW_ONLY, or DEPENDENCY_ONLY.");
+            return;
+        }
+
+        if (!Set.of("DATA_STACK", "DATA_SEMANTIC", "DATA_LOCAL", "WALA_ONLY").contains(dfgMode)) {
+            System.err.println("Invalid graph mode option. Use DATA_STACK, DATA_SEMANTIC, DATA_LOCAL, or WALA_ONLY.");
+            return;
+        }
+
+        Path targetPath = Paths.get(targetPathStr).toAbsolutePath();
+        String appClassPath = Files.isDirectory(targetPath) ? targetPath.toString() : targetPath.getParent().toString();
         Diagnosis diagnosis = new Diagnosis(EXCLUSIONS_PATH);
-        Analysis engine = new Analysis(mode, ddgOption, diagnosis);
+        Analysis engine = new Analysis(dfgMode, analyzeMode, diagnosis);
         Set<Path> failedFiles = new LinkedHashSet<>();
 
         try {

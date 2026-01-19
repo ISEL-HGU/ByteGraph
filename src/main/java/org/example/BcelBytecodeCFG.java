@@ -21,7 +21,7 @@ public class BcelBytecodeCFG {
         public byte[] rawCode; // 라벨링/검증용
     }
 
-    public Graph build(String classFilePath, String methodName, String methodDesc, String mode) throws Exception {
+    public Graph build(String classFilePath, String methodName, String methodDesc, String dfgMode) throws Exception {
         ClassParser cp = new ClassParser(new FileInputStream(classFilePath), classFilePath);
         JavaClass jc = cp.parse();
         ConstantPoolGen cpg = new ConstantPoolGen(jc.getConstantPool());
@@ -54,7 +54,7 @@ public class BcelBytecodeCFG {
         }
 
         // 2) 물리적 DFG 추출: 로컬 변수 슬롯 추적 (간이 Reaching Definitions)
-        if (mode.equals("DATA_LOCAL") || mode.equals("DATA_STACK")) {
+        if (!dfgMode.equals("WALA_ONLY")) {
             Map<Integer, Integer> lastWriteToSlot = new HashMap<>(); // slotIndex -> offset
             // 간단한 스택 시뮬레이션 (Stack-based DFG)
 
@@ -73,17 +73,32 @@ public class BcelBytecodeCFG {
         }
 
         // 스택 기반 추적: 값을 생산하는 명령어와 소비하는 명령어 연결
-        if (mode.equals("DATA_STACK")) {
+        if (dfgMode.equals("DATA_STACK") || dfgMode.equals("DATA_SEMANTIC")) {
             Stack<Integer> producerStack = new Stack<>();
             for (InstructionHandle ih : ihs) {
                 Instruction inst = ih.getInstruction();
                 int off = ih.getPosition();
+
+                // 소비자
                 int consume = inst.consumeStack(cpg);
                 for (int i = 0; i < consume && !producerStack.isEmpty(); i++) {
-                    g.dfgEdges.get(producerStack.pop()).add(off);
+                    int srcOff = producerStack.pop();
+                    // DATA_STACK mode
+                    if (dfgMode.equals("DATA_STACK")) g.dfgEdges.get(srcOff).add(off);
+                    // DATA_SEMANTIC mode : 유효한 흐름만 추가
+                    else {
+                        Instruction srcInst = il.findHandle(srcOff).getInstruction();
+                        if (isMeaningfulProducer(srcInst) && isMeaningfulConsumer(inst)) {
+                            g.dfgEdges.get(srcOff).add(off);
+                        }
+                    }
                 }
+
+                // 생산자 스택 관리
                 int produce = inst.produceStack(cpg);
-                for (int i = 0; i < produce; i++) producerStack.push(off);
+                for (int i = 0; i < produce; i++) {
+                    producerStack.push(off);
+                }
             }
         }
 
@@ -133,6 +148,26 @@ public class BcelBytecodeCFG {
             }
         }
         return g;
+    }
+
+    private static boolean isMeaningfulProducer(Instruction inst) {
+        return inst instanceof ArithmeticInstruction
+                || inst instanceof ConstantPushInstruction  // ICONST, BIPUSH, LDC 등 (상수)
+                || inst instanceof LoadInstruction          // ILOAD, ALOAD 등 (변수 로드)
+                || inst instanceof InvokeInstruction         // 메서드 호출 결과값
+                || inst instanceof FieldInstruction         // 필드 읽기 (GETSTATIC, GETFIELD)
+                || inst instanceof CPInstruction           // LDC, LDC2_W 등
+                || inst instanceof ConversionInstruction
+                || inst instanceof ArrayInstruction;
+    }
+
+    private static boolean isMeaningfulConsumer(Instruction inst) {
+        return inst instanceof ArithmeticInstruction        // ISUB, IADD 등 (산술 연산)
+                || inst instanceof StoreInstruction         // ISTORE, DSTORE 등 (변수 저장)
+                || inst instanceof InvokeInstruction        // 메서드 인자로 전달
+                || inst instanceof ReturnInstruction       // 메서드 결과값으로 반환
+                || inst instanceof ConversionInstruction
+                || inst instanceof ArrayInstruction;
     }
 
     private static String operandsToString(Instruction inst, InstructionHandle ih, ConstantPoolGen cpg) {

@@ -39,7 +39,7 @@ public class WalaIRProjector {
 
     /** main entry: orchestrates all steps */
     public Flow analyze(WalaSession session, String internalClassName, String methodName, String methodDesc,
-                        BcelBytecodeCFG.Graph instrCFG, String ddgOption) throws Exception {
+                        BcelBytecodeCFG.Graph instrCFG, String analyzeMode) throws Exception {
 
         // 1) Target 메서드 찾기
         String walaInternal = "L" + internalClassName;
@@ -88,15 +88,14 @@ public class WalaIRProjector {
         // 3) DFG/DDG/CDG 생성
         Map<Integer, Integer> irIndexToOffset = buildIRIndexToOffset(ir);
         buildDFG(ir, irIndexToOffset, flow);
-        buildCDG(ir, ir.getControlFlowGraph(), irIndexToOffset, flow);
 
-        if (!"NO_DDG".equals(ddgOption)) {
+        if (!"FLOW_ONLY".equals(analyzeMode)) {
+            buildCDG(ir, ir.getControlFlowGraph(), irIndexToOffset, flow);
             buildDDG(session, targetMethod, ir, irIndexToOffset, flow);
+            flow.dfg.forEach((src, dsts) -> {
+                flow.ddg.computeIfAbsent(src, k -> new LinkedHashSet<>()).addAll(dsts);
+            });
         }
-
-        flow.dfg.forEach((src, dsts) -> {
-            flow.ddg.computeIfAbsent(src, k -> new LinkedHashSet<>()).addAll(dsts);
-        });
 
         return flow;
     }

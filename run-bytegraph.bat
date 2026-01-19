@@ -11,14 +11,14 @@ REM ============================================
 REM 0) Check argument
 if "%~1"=="" (
   echo [ERROR] .class file path is required.
-  echo Usage: %~nx0 "C:\path\to\MyClass.class"
+  echo Usage: %~nx0 -t "C:\path\to\MyClass.class" [-a anlayzeMode] [-d dfgMode] [-l libPath]
   exit /b 1
 )
 set "CLASS_PATH=%~1"
 
 REM 3) Run Gradle (must be executed in project root)
 echo [INFO] Running Gradle...
-gradle run --console=plain -q --args="%CLASS_PATH%" -Dfile.encoding=UTF-8
+gradle run --console=plain -q --args="%*" -Dfile.encoding=UTF-8
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (

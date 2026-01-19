@@ -14,3 +14,4 @@ javax\/crypto\/.*
 com\/sun\/crypto\/.*
 sun\/security\/.*
 java\/awt\/.*
+java\/swing\/.*

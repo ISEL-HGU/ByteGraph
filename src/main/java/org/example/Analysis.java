@@ -8,13 +8,13 @@ import java.util.List;
 import java.util.Set;
 
 public class Analysis {
-    private final String mode;
-    private final String ddgOption;
+    private final String dfgMode;
+    private final String analyzeMode;
     private final Diagnosis diagnosis;
 
-    public Analysis(String mode, String ddgOption, Diagnosis diagnosis) {
-        this.mode = mode;
-        this.ddgOption = ddgOption;
+    public Analysis(String dfgMode, String outputMode, Diagnosis diagnosis) {
+        this.dfgMode = dfgMode;
+        this.analyzeMode = outputMode;
         this.diagnosis = diagnosis;
     }
 
@@ -60,15 +60,15 @@ public class Analysis {
                         }
 
                         // 2. 일반 메서드인 경우에만 CFG 빌드 및 분석 진행
-                        BcelBytecodeCFG.Graph instrCFG = bcel.build(file.toString(), ms.name, ms.desc, mode);
-                        WalaIRProjector.Flow flow = projector.analyze(session, scan.internalName, ms.name, ms.desc, instrCFG, ddgOption);
+                        BcelBytecodeCFG.Graph instrCFG = bcel.build(file.toString(), ms.name, ms.desc, dfgMode);
+                        WalaIRProjector.Flow flow = projector.analyze(session, scan.internalName, ms.name, ms.desc, instrCFG, analyzeMode);
 
                         if (flow != null) {
                             Path outDir = Paths.get("out");
                             Files.createDirectories(outDir);
                             String qName = scan.internalName.replace('/', '.') + "." + ms.name;
                             String safeFileName = qName.replace("<", "").replace(">", "") + ".json";
-                            JsonExporter.export(scan.internalName, ms.name, ms.desc, instrCFG, flow, outDir.resolve(safeFileName));
+                            JsonExporter.export(scan.internalName, ms.name, ms.desc, instrCFG, flow, outDir.resolve(safeFileName), analyzeMode);
                             hasNormalMethodSuccess = true;
                         }
                     } catch (Exception e) {
