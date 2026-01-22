@@ -13,12 +13,14 @@ public class Main {
             System.exit(1);
         }
 
-        // 1. set options
+        // 1. option 설정
+
         String targetPathStr = null;
         String dfgMode = "DATA_SEMANTIC";
         String analyzeMode = "ALL";
         List<String> extraLibs = new ArrayList<>();
 
+        // 1-1. option flag
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "-t":
@@ -41,11 +43,13 @@ public class Main {
             }
         }
 
+        // 1-2. option 사용법
         if (targetPathStr == null) {
             printUsage();
             return;
         }
 
+        // 1-3. 기본 옵션 설정
         if (!Set.of("ALL", "FLOW_ONLY", "DEPENDENCY_ONLY").contains(analyzeMode)) {
             System.err.println("Invalid graph mode option. Use ALL, FLOW_ONLY, or DEPENDENCY_ONLY.");
             return;
@@ -55,6 +59,8 @@ public class Main {
             System.err.println("Invalid graph mode option. Use DATA_STACK, DATA_SEMANTIC, DATA_LOCAL, or WALA_ONLY.");
             return;
         }
+
+        // 2. 분석 준비
 
         Path targetPath = Paths.get(targetPathStr).toAbsolutePath();
         String appClassPath = Files.isDirectory(targetPath) ? targetPath.toString() : targetPath.getParent().toString();
@@ -67,26 +73,21 @@ public class Main {
         System.out.println("DFG Mode : "+dfgMode);
         if (!extraLibs.isEmpty()) System.out.println("External Libraries : "+extraLibs);
 
-        // 1. [이동] 분석할 파일 목록을 세션 생성 전에 먼저 확보 (기존 58번 로직을 위로 올림)
+        // 3. 클래스 스캔
+
         List<Path> filesToProcess = Files.isDirectory(targetPath)
                 ? Files.walk(targetPath).filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())
                 : List.of(targetPath);
 
-// 2. [신규] BCEL을 이용한 사전 스캔 (Pre-scan)
+        // 3-1. 사용 패키지 추출
         System.out.println(">>> Pre-scanning classes to find blocked packages...");
         for (Path file : filesToProcess) {
             try {
-                // BCEL로 클래스 파일 로드 [4]
                 BcelClassIntrospector.ClassScan scan = BcelClassIntrospector.scanClassFile(file.toString());
-
-                // Constant Pool에서 참조하는 패키지들을 추출 (신규 메서드 필요)
                 Set<String> referencedPkgs = extractReferencedPackages(scan.jClass);
-
                 for (String pkg : referencedPkgs) {
-                    // 해당 패키지가 exclusions.txt에 있는지 확인 [5]
                     String matched = diagnosis.findExcludedPackage(pkg);
                     if (matched != null) {
-                        // 세션 만들기 전에 미리 해제 목록에 추가
                         diagnosis.getPackagesToUnblock().add(matched);
                     }
                 }
@@ -94,12 +95,15 @@ public class Main {
         }
 
         try {
-            // [1차 시도] 기존 exclusions.txt 사용하여 빠르게 분석
+
+            // 4. 첫 번째 분석
+
             System.out.println(">>> [Pass 1] Starting fast analysis with exclusions...");
             WalaSession session1 = null;
             int retryCount = 0;
             int MAX_RETRIES = 20;
 
+            // 4-1. session 초기화
             while (session1 == null && retryCount < MAX_RETRIES) {
                 try {
                     session1 = WalaSession.init(appClassPath, diagnosis.getPackagesToUnblock(), extraLibs);
@@ -118,73 +122,35 @@ public class Main {
                 }
             }
 
+            // 4-2. 분석 시작
             if (session1 != null) {
                 engine.run(session1, filesToProcess, failedFiles);
             }
 
-            // [2차 시도 - Healing] 실패한 파일 재시도
+            // 5. 실패한 파일 재시도
+
             if (!failedFiles.isEmpty()) {
                 System.out.println("\n>>> [Pass 2] Healing session starting...");
-                // 1차 시도 결과 스냅샷 저장
                 Set<String> pass1Exclusions = new HashSet<>(diagnosis.getPackagesToUnblock());
-                Set<String> pass1Missing = new HashSet<>(diagnosis.getMissingLibraries());
 
-
-                // 1차 시도에서 수집된 에러를 바탕으로 해결책이 있는지 확인
                 if (diagnosis.hasSuggestions()) {
 
-                    // 차단 해제가 필요한 패키지가 있다면 2차 시도 진행
+                    // 5-1. 차단 해제가 필요한 패키지가 있다면 2차 시도 진행
                     if (!diagnosis.getPackagesToUnblock().isEmpty() || !diagnosis.getMissingLibraries().isEmpty()) {
                         System.out.println(">>> Retrying with dynamic unblocking for: " + diagnosis.getPackagesToUnblock());
-
                         diagnosis.clear();
                         WalaSession healingSession = WalaSession.init(appClassPath, pass1Exclusions, extraLibs);
 
-                        // 2차 시도
+                        // 5-2. 2차 시도
                         Set<Path> pass2Failed = new HashSet<>();
                         engine.run(healingSession, new ArrayList<>(failedFiles), pass2Failed);
                         System.out.println("\n" + "=".repeat(20) + " FINAL HEALING REPORT " + "=".repeat(20));
 
-                        // 1. 해결된 항목 (Pass 1에는 있었으나 Pass 2에서는 발생하지 않음)
-                        Set<String> resolvedExclusions = new HashSet<>(pass1Exclusions);
-                        resolvedExclusions.removeAll(diagnosis.getPackagesToUnblock());
-
-                        if (!resolvedExclusions.isEmpty()) {
-                            System.out.println("[RESOLVED] These exclusions no longer cause errors:");
-                            resolvedExclusions.forEach(s -> System.out.println(" + " + s));
-                        }
-
-                        // 2. 여전히 해결되지 않은 항목 (Pass 2에서도 다시 수집됨)
-                        if (!diagnosis.getPackagesToUnblock().isEmpty() || !diagnosis.getMissingLibraries().isEmpty()) {
-                            System.out.println("\n[UNRESOLVED] Still causing issues after healing session:");
-
-                            // 클래스 -> 라이브러리 매칭 출력
-                            if (!diagnosis.getClassToMissingLibMap().isEmpty()) {
-                                System.out.println(" --- Missing Dependency Mapping ---");
-                                diagnosis.getClassToMissingLibMap().forEach((targetClass, libs) -> {
-                                    System.out.println(" * Target: " + targetClass + " -> Needs: " + libs);
-                                });
-                            }
-
-                            if (!diagnosis.getPackagesToUnblock().isEmpty()) {
-                                System.out.println(" - Persistent Exclusions: " + diagnosis.getPackagesToUnblock());
-                            }
-
-                            // 3. 수동 해결 가이드 출력
-                            System.out.println("\n" + "-".repeat(60));
-                            System.out.println(">>> Manual Fix Guide");
-                            System.out.println("-".repeat(60));
-                            System.out.println("1) Library Issue: Add the JAR files identified in the mapping above to your classpath.");
-                            System.out.println("2) Scope Exclusion Issue: Check whether there is a comment (#) in front of the package in 'exclusions.txt' and remove it if necessary.");
-                            System.out.println("3) Environment Check: Ensure that 'rt.jar' and 'jce.jar' are available in the [root folder]/lib/ directory of this repository. Verify that these files have not been deleted.");
-
-                            System.out.println("-".repeat(60));
-                        }
-
+                        // 5-3. 결과 출력
+                        printResult(pass1Exclusions, diagnosis);
                         if (pass2Failed.isEmpty()) {
                             System.out.println("\n>>> ALL FAILURES SUCCESSFULLY HEALED!");
                         }
-
                         System.out.println("=".repeat(60) + "\n");
                     }
                 } else {
@@ -215,5 +181,39 @@ public class Main {
 
     private static void printUsage() {
         System.err.println("Usage: java -jar bytegraph.jar <appClassPath> [mode] [ddgOption]");
+    }
+
+    private static void printResult(Set<String> pass1Exclusions, Diagnosis diagnosis) {
+        Set<String> resolvedExclusions = new HashSet<>(pass1Exclusions);
+        resolvedExclusions.removeAll(diagnosis.getPackagesToUnblock());
+        if (!resolvedExclusions.isEmpty()) {
+            System.out.println("[RESOLVED] These exclusions no longer cause errors:");
+            resolvedExclusions.forEach(s -> System.out.println(" + " + s));
+        }
+
+        // 여전히 해결되지 않은 항목
+        if (!diagnosis.getPackagesToUnblock().isEmpty() || !diagnosis.getMissingLibraries().isEmpty()) {
+            System.out.println("\n[UNRESOLVED] Still causing issues after healing session:");
+
+            // 클래스 -> 라이브러리 매칭 출력
+            if (!diagnosis.getClassToMissingLibMap().isEmpty()) {
+                System.out.println(" --- Missing Dependency Mapping ---");
+                diagnosis.getClassToMissingLibMap().forEach((targetClass, libs) -> {
+                    System.out.println(" * Target: " + targetClass + " -> Needs: " + libs);
+                });
+            }
+
+            if (!diagnosis.getPackagesToUnblock().isEmpty()) {
+                System.out.println(" - Persistent Exclusions: " + diagnosis.getPackagesToUnblock());
+            }
+
+            System.out.println("\n" + "-".repeat(60));
+            System.out.println(">>> Manual Fix Guide");
+            System.out.println("-".repeat(60));
+            System.out.println("1) Library Issue: Add the JAR files identified in the mapping above to your classpath.");
+            System.out.println("2) Scope Exclusion Issue: Check whether there is a comment (#) in front of the package in 'exclusions.txt' and remove it if necessary.");
+            System.out.println("3) Environment Check: Ensure that 'rt.jar' and 'jce.jar' are available in the [root folder]/lib/ directory of this repository. Verify that these files have not been deleted.");
+            System.out.println("-".repeat(60));
+        }
     }
 }

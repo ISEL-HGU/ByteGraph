@@ -49,20 +49,4 @@ public class BcelClassIntrospector {
         return new ClassScan(internalName, superName, list, jClass);
     }
 
-    public static Set<String> extractReferencedPackages(JavaClass jClass) {
-        Set<String> referencedPackages = new HashSet<>();
-        ConstantPool cp = jClass.getConstantPool();
-
-        for (int i = 0; i < cp.getLength(); i++) {
-            Constant c = cp.getConstant(i);
-            if (c instanceof ConstantClass) {
-                String className = ((ConstantClass) c).getConstantValue(cp).toString();
-                if (className.contains("/")) {
-                    String pkg = className.substring(0, className.lastIndexOf('/') + 1) + ".*";
-                    referencedPackages.add(pkg.replace("/", "\\/")); // exclusions.txt 형식에 맞게 변환
-                }
-            }
-        }
-        return referencedPackages;
-    }
 }

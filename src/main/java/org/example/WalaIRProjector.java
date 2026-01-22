@@ -193,11 +193,11 @@ public class WalaIRProjector {
 
     private Map<Integer, Integer> buildIRIndexToOffset(IR ir) {
         Map<Integer, Integer> map = new HashMap<>();
-        if (ir.getMethod() instanceof IBytecodeMethod bm) {
+        if (ir.getMethod() instanceof IBytecodeMethod byteMethod) {
             SSAInstruction[] ins = ir.getInstructions();
             for (int i = 0; i < ins.length; i++) {
                 try {
-                    int bcIndex = bm.getBytecodeIndex(i);
+                    int bcIndex = byteMethod.getBytecodeIndex(i);
                     if (bcIndex >= 0) map.put(i, bcIndex);
                 } catch (Exception ignore) {}
             }
