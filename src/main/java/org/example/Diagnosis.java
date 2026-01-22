@@ -19,17 +19,20 @@ public class Diagnosis {
 
     public void analyzeError(String errorMessage, String currentClassName) {
         try {
-            // 1. 에러 메시지에서 클래스 경로 추출
+
             String foundClass = extractClassName(errorMessage);
-
-            // 자기 자신인 경우 즉시 종료 (리포트에 추가 안 함)
             if (foundClass == null || foundClass.equals(currentClassName)) return;
+            String classPath = foundClass.replace(".", "/");
 
-            // 2. 상위 패키지 중 exclusions.txt에 걸리는 게 있는지 확인
-            String matchedExclusion = findExcludedPackage(foundClass.replace(".", "/"));
-            if (matchedExclusion != null) {
-                packagesToUnblock.add(matchedExclusion);
+            List<String> matchedExclusions = findExcludedPackages(classPath);
+
+            if (!matchedExclusions.isEmpty()) {
+                for (String pattern : matchedExclusions) {
+                    // 이미 목록에 있더라도 다시 추가해도 Set이라 중복되지 않음 [5]
+                    packagesToUnblock.add(pattern);
+                }
             } else {
+                // 어떤 패턴에도 걸리지 않는다면 순수 라이브러리 누락으로 판단 [4]
                 missingLibraries.add(foundClass);
                 classToMissingLibMap.computeIfAbsent(currentClassName, k -> new HashSet<>()).add(foundClass);
             }
@@ -74,7 +77,7 @@ public class Diagnosis {
 
     }
 
-    private String findExcludedPackage(String classPath) {
+    public String findExcludedPackage(String classPath) {
         try {
             List<String> exclusions = Files.readAllLines(exclusionsPath);
             for (String line : exclusions) {
@@ -91,6 +94,28 @@ public class Diagnosis {
             return null;
         }
         return null;
+    }
+
+    private List<String> findExcludedPackages(String classPath) {
+        List<String> matchedPatterns = new ArrayList<>();
+        try {
+            List<String> exclusions = Files.readAllLines(exclusionsPath);
+            for (String line : exclusions) {
+                String pattern = line.trim();
+                if (pattern.startsWith("#") || pattern.isEmpty()) continue;
+
+                // [1] 정규화 과정
+                String cleanPattern = pattern.replace("\\", "").replace(".*", "");
+
+                // 오류 패키지 명의 상위 경로가 파일의 패턴으로 시작하는지 확인
+                if (classPath.startsWith(cleanPattern)) {
+                    matchedPatterns.add(pattern); // 매칭되는 모든 패턴을 리스트에 담음
+                }
+            }
+        } catch (IOException e) {
+            return matchedPatterns;
+        }
+        return matchedPatterns;
     }
 
     public void clear() {

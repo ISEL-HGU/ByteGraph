@@ -55,9 +55,14 @@ public class WalaSession {
                     }
 
                     // 1-2. unblockPatterns에 포함된 패키지라면 주석 처리된 것처럼 무시
-                    boolean shouldUnblock = unblockPatterns.stream().anyMatch(trimmed::contains);
+                    boolean shouldUnblock = unblockPatterns.stream().anyMatch(p ->
+                            p.replace("\\", "")
+                                    .replace(".*", "")
+                                    .equals(trimmed.replace("\\", "")
+                                            .replace(".*", "")));
                     if (shouldUnblock) {
-                        filteredLines.add("# " + line + " // Dynamically unblocked");
+                        filteredLines.add("#" + trimmed);
+                        System.out.println(">>> [Auto-Heal] Successfully unblocked in memory: " + trimmed);
                     } else {
                         filteredLines.add(line);
                     }

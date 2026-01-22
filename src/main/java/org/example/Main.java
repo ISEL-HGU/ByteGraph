@@ -67,13 +67,38 @@ public class Main {
         System.out.println("DFG Mode : "+dfgMode);
         if (!extraLibs.isEmpty()) System.out.println("External Libraries : "+extraLibs);
 
+        // 1. [이동] 분석할 파일 목록을 세션 생성 전에 먼저 확보 (기존 58번 로직을 위로 올림)
+        List<Path> filesToProcess = Files.isDirectory(targetPath)
+                ? Files.walk(targetPath).filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())
+                : List.of(targetPath);
+
+// 2. [신규] BCEL을 이용한 사전 스캔 (Pre-scan)
+        System.out.println(">>> Pre-scanning classes to find blocked packages...");
+        for (Path file : filesToProcess) {
+            try {
+                // BCEL로 클래스 파일 로드 [4]
+                BcelClassIntrospector.ClassScan scan = BcelClassIntrospector.scanClassFile(file.toString());
+
+                // Constant Pool에서 참조하는 패키지들을 추출 (신규 메서드 필요)
+                Set<String> referencedPkgs = extractReferencedPackages(scan.jClass);
+
+                for (String pkg : referencedPkgs) {
+                    // 해당 패키지가 exclusions.txt에 있는지 확인 [5]
+                    String matched = diagnosis.findExcludedPackage(pkg);
+                    if (matched != null) {
+                        // 세션 만들기 전에 미리 해제 목록에 추가
+                        diagnosis.getPackagesToUnblock().add(matched);
+                    }
+                }
+            } catch (Exception ignore) {}
+        }
 
         try {
             // [1차 시도] 기존 exclusions.txt 사용하여 빠르게 분석
             System.out.println(">>> [Pass 1] Starting fast analysis with exclusions...");
             WalaSession session1 = null;
             int retryCount = 0;
-            int MAX_RETRIES = 10;
+            int MAX_RETRIES = 20;
 
             while (session1 == null && retryCount < MAX_RETRIES) {
                 try {
@@ -94,10 +119,6 @@ public class Main {
             }
 
             if (session1 != null) {
-                List<Path> filesToProcess = Files.isDirectory(targetPath)
-                        ? Files.walk(targetPath).filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())
-                        : List.of(targetPath);
-
                 engine.run(session1, filesToProcess, failedFiles);
             }
 
@@ -175,13 +196,21 @@ public class Main {
         }
     }
 
-    private static void printManualGuide() {
-        System.out.println("\n" + "-".repeat(60));
-        System.out.println(">>> Manual Fix Guide");
-        System.out.println("-".repeat(60));
-        System.out.println("1) Library Issue: Add missing JAR files to your classpath using -l option.");
-        System.out.println("2) Environment Check: Ensure 'rt.jar' and 'jce.jar' are in [root]/lib/ folder.");
-        System.out.println("-".repeat(60));
+    private static Set<String> extractReferencedPackages(org.apache.bcel.classfile.JavaClass jClass) {
+        Set<String> pkgs = new HashSet<>();
+        org.apache.bcel.classfile.ConstantPool cp = jClass.getConstantPool();
+        for (int i = 0; i < cp.getLength(); i++) {
+            org.apache.bcel.classfile.Constant c = cp.getConstant(i);
+            if (c instanceof org.apache.bcel.classfile.ConstantClass cc) {
+                String className = cc.getConstantValue(cp).toString();
+                if (className.contains("/")) {
+                    // WALA exclusions 형식에 맞게 변환 (예: sun/security/.*)
+                    String pkgPath = className.substring(0, className.lastIndexOf('/') + 1) + ".*";
+                    pkgs.add(pkgPath.replace("/", "\\/"));
+                }
+            }
+        }
+        return pkgs;
     }
 
     private static void printUsage() {

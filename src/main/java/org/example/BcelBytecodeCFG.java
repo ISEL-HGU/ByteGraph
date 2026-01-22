@@ -175,23 +175,27 @@ public class BcelBytecodeCFG {
     }
 
     private static boolean isMeaningfulProducer(Instruction inst) {
-        return inst instanceof ArithmeticInstruction
-                || inst instanceof ConstantPushInstruction  // ICONST, BIPUSH, LDC 등 (상수)
-                || inst instanceof LoadInstruction          // ILOAD, ALOAD 등 (변수 로드)
+        return inst instanceof LoadInstruction
+                || inst instanceof ArithmeticInstruction          // ILOAD, ALOAD 등 (변수 로드)
                 || inst instanceof InvokeInstruction         // 메서드 호출 결과값
                 || inst instanceof FieldInstruction         // 필드 읽기 (GETSTATIC, GETFIELD)
-                || inst instanceof CPInstruction           // LDC, LDC2_W 등
                 || inst instanceof ConversionInstruction
-                || inst instanceof ArrayInstruction;
+                || inst instanceof ArrayInstruction
+                || inst instanceof ConstantPushInstruction  // ICONST, BIPUSH, LDC 등 (상수)
+                || inst instanceof CPInstruction           // LDC, LDC2_W 등
+                ;
     }
 
     private static boolean isMeaningfulConsumer(Instruction inst) {
-        return inst instanceof ArithmeticInstruction        // ISUB, IADD 등 (산술 연산)
-                || inst instanceof StoreInstruction         // ISTORE, DSTORE 등 (변수 저장)
+        return inst instanceof StoreInstruction        // ISUB, IADD 등 (산술 연산)
+                || inst instanceof ArithmeticInstruction         // ISTORE, DSTORE 등 (변수 저장)
                 || inst instanceof InvokeInstruction        // 메서드 인자로 전달
-                || inst instanceof ReturnInstruction       // 메서드 결과값으로 반환
+                || inst instanceof FieldInstruction
                 || inst instanceof ConversionInstruction
-                || inst instanceof ArrayInstruction;
+                || inst instanceof ArrayInstruction
+                || inst instanceof ReturnInstruction       // 메서드 결과값으로 반환
+                || inst instanceof BranchInstruction  // IF_ICMPEQ, IFNULL 등
+                || inst instanceof Select;            // TABLESWITCH, LOOKUPSWITCH
     }
 
     private static String operandsToString(Instruction inst, InstructionHandle ih, ConstantPoolGen cpg) {
