@@ -15,3 +15,8 @@ com\/sun\/crypto\/.*
 sun\/security\/.*
 java\/awt\/.*
 java\/swing\/.*
+com\/oracle\/webservices\/.*
+javax\/xml\/ws\/.*
+java\/applet\/.*
+java\/rmi\/.*
+javax\/activation\/.*

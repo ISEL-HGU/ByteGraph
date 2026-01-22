@@ -62,16 +62,44 @@ public class Main {
         Analysis engine = new Analysis(dfgMode, analyzeMode, diagnosis);
         Set<Path> failedFiles = new LinkedHashSet<>();
 
+        System.out.println("Analsis Class Path : "+targetPathStr);
+        System.out.println("Analysis Mode : "+analyzeMode);
+        System.out.println("DFG Mode : "+dfgMode);
+        if (!extraLibs.isEmpty()) System.out.println("External Libraries : "+extraLibs);
+
+
         try {
             // [1차 시도] 기존 exclusions.txt 사용하여 빠르게 분석
             System.out.println(">>> [Pass 1] Starting fast analysis with exclusions...");
-            WalaSession session1 = WalaSession.init(appClassPath, Collections.emptySet(), Collections.emptyList());
+            WalaSession session1 = null;
+            int retryCount = 0;
+            int MAX_RETRIES = 10;
 
-            List<Path> filesToProcess = Files.isDirectory(targetPath)
-                    ? Files.walk(targetPath).filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())
-                    : List.of(targetPath);
+            while (session1 == null && retryCount < MAX_RETRIES) {
+                try {
+                    session1 = WalaSession.init(appClassPath, diagnosis.getPackagesToUnblock(), extraLibs);
+                } catch (Exception e) {
+                    retryCount++;
+                    diagnosis.analyzeError(e.getMessage(), "SystemInit");
+                    if (diagnosis.hasSuggestions()) {
+                        System.out.println(">>> [Retry " + retryCount + "] Found issues: " + diagnosis.getPackagesToUnblock());
+                        System.out.println(">>> Updating scope and retrying initialization...");
+                        diagnosis.printReport();
+                    } else {
+                        System.err.println(">>> [Critical] Failed to initialize session even after healing.");
+                        diagnosis.printReport();
+                        throw e;
+                    }
+                }
+            }
 
-            engine.run(session1, filesToProcess, failedFiles);
+            if (session1 != null) {
+                List<Path> filesToProcess = Files.isDirectory(targetPath)
+                        ? Files.walk(targetPath).filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())
+                        : List.of(targetPath);
+
+                engine.run(session1, filesToProcess, failedFiles);
+            }
 
             // [2차 시도 - Healing] 실패한 파일 재시도
             if (!failedFiles.isEmpty()) {
@@ -85,15 +113,11 @@ public class Main {
                 if (diagnosis.hasSuggestions()) {
 
                     // 차단 해제가 필요한 패키지가 있다면 2차 시도 진행
-                    if (!diagnosis.getPackagesToUnblock().isEmpty()) {
+                    if (!diagnosis.getPackagesToUnblock().isEmpty() || !diagnosis.getMissingLibraries().isEmpty()) {
                         System.out.println(">>> Retrying with dynamic unblocking for: " + diagnosis.getPackagesToUnblock());
-                        diagnosis.clear();
 
-                        WalaSession healingSession = WalaSession.init(
-                                appClassPath,
-                                pass1Exclusions,
-                                Collections.emptyList() // 필요 시 외부 라이브러리 경로 추가 가능
-                        );
+                        diagnosis.clear();
+                        WalaSession healingSession = WalaSession.init(appClassPath, pass1Exclusions, extraLibs);
 
                         // 2차 시도
                         Set<Path> pass2Failed = new HashSet<>();
@@ -139,6 +163,7 @@ public class Main {
                         if (pass2Failed.isEmpty()) {
                             System.out.println("\n>>> ALL FAILURES SUCCESSFULLY HEALED!");
                         }
+
                         System.out.println("=".repeat(60) + "\n");
                     }
                 } else {
@@ -148,6 +173,15 @@ public class Main {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private static void printManualGuide() {
+        System.out.println("\n" + "-".repeat(60));
+        System.out.println(">>> Manual Fix Guide");
+        System.out.println("-".repeat(60));
+        System.out.println("1) Library Issue: Add missing JAR files to your classpath using -l option.");
+        System.out.println("2) Environment Check: Ensure 'rt.jar' and 'jce.jar' are in [root]/lib/ folder.");
+        System.out.println("-".repeat(60));
     }
 
     private static void printUsage() {

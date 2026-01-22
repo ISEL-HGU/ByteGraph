@@ -24,28 +24,28 @@ public class BcelClassIntrospector {
     public static class ClassScan {
         public final String internalName;
         public final String superName;
-        public final List<MethodSig> methods;       // Code 있는 메서드만
-        public ClassScan(String internalName, String superName, List<MethodSig> methods) {
+        public final List<Method> methods;
+        public final JavaClass jClass;
+        public ClassScan(String internalName, String superName, List<Method> methods, JavaClass jClass) {
             this.internalName = internalName;
             this.superName = superName;
             this.methods = methods;
+            this.jClass = jClass;
         }
     }
 
     /** .class 파일을 파싱해 내부 클래스 이름과 Code 있는 메서드 목록을 돌려준다 */
     public static ClassScan scanClassFile(String classFilePath) throws Exception {
-        ClassParser cp = new ClassParser(new FileInputStream(classFilePath), classFilePath);
-        JavaClass jc = cp.parse();
-        String dotted = jc.getClassName();
-        String internal = dotted.replace('.', '/');
-        String superName = jc.getSuperclassName().replace('.', '/');
+        ClassParser cParser = new ClassParser(new FileInputStream(classFilePath), classFilePath);
+        JavaClass jClass = cParser.parse();
+        String dottedName = jClass.getClassName();
+        String internalName = dottedName.replace('.', '/');
+        String superName = jClass.getSuperclassName().replace('.', '/');
 
-        List<MethodSig> list = new ArrayList<>();
-        for (Method m : jc.getMethods()) {
-            Code code = m.getCode();
-            if (code == null) continue;                     // abstract/native 제외
-            list.add(new MethodSig(m.getName(), m.getSignature()));
+        List<Method> list = new ArrayList<>();
+        for (Method m : jClass.getMethods()) {
+            if (m.getCode() != null) list.add(m);
         }
-        return new ClassScan(internal, superName, list);
+        return new ClassScan(internalName, superName, list, jClass);
     }
 }

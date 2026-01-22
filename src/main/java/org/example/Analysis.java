@@ -1,5 +1,7 @@
 package org.example;
 
+import org.apache.bcel.classfile.Method;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -31,69 +33,13 @@ public class Analysis {
             boolean classHasError = false;
             boolean hasNormalMethodSuccess = false;
             List<String> failedMethodNames = new ArrayList<>();
+            BcelClassIntrospector.ClassScan scan;
+
+            // 1. class scan
 
             try {
-                BcelClassIntrospector.ClassScan scan = BcelClassIntrospector.scanClassFile(file.toString());
-                String className = scan.internalName.replace('/', '.');
-
-                try {
-                    if (projector.isInterfaceClass(session, scan.internalName) || scan.methods.isEmpty()) {
-                        System.out.println("[RESULT] INTERFACE : " + className);
-                        interfaceCount++;
-                        continue;
-                    }
-                } catch (Exception e) {
-                    // WALA가 부모 클래스를 못 찾아서 로드에 실패하면 여기서 바로 진단하고 다음 파일로!
-                    diagnosis.addMissingLibrary(scan.superName, className);
-                    diagnosis.analyzeError(e.getMessage(), className);
-                    failCount++;
-                    failedFiles.add(file);
-                    System.out.println("[RESULT] FAIL      : " + className + " ( Class Hierarchy Incomplete )");
-                    continue;
-                }
-
-                // 3. 의존성 문제가 없다면 메서드 분석 루프 시작
-                for (var ms : scan.methods) {
-                    try {
-                        if (projector.isAbstractMethod(session, scan.internalName, ms.name, ms.desc)) {
-                            continue;
-                        }
-
-                        // 2. 일반 메서드인 경우에만 CFG 빌드 및 분석 진행
-                        BcelBytecodeCFG.Graph instrCFG = bcel.build(file.toString(), ms.name, ms.desc, dfgMode);
-                        WalaIRProjector.Flow flow = projector.analyze(session, scan.internalName, ms.name, ms.desc, instrCFG, analyzeMode);
-
-                        if (flow != null) {
-                            Path outDir = Paths.get("out");
-                            Files.createDirectories(outDir);
-                            String qName = scan.internalName.replace('/', '.') + "." + ms.name;
-                            String safeFileName = qName.replace("<", "").replace(">", "") + ".json";
-                            JsonExporter.export(scan.internalName, ms.name, ms.desc, instrCFG, flow, outDir.resolve(safeFileName), analyzeMode);
-                            hasNormalMethodSuccess = true;
-                        }
-                    } catch (Exception e) {
-                        failedMethodNames.add(ms.name);
-                        diagnosis.analyzeError(e.getMessage(), className);
-                        if (e.getMessage().contains("Class not found: L" + scan.internalName)) {
-                            diagnosis.addMissingLibrary(scan.superName.replace('/', '.'), scan.internalName);
-                        }
-                        classHasError = true;
-                    }
-                }
-
-                // 최종 분류 로직
-                if (classHasError) {
-                    failCount++;
-                    failedFiles.add(file);
-                    String methods = String.join(", ", failedMethodNames);
-                    System.out.println("[RESULT] FAIL      : " + className+ " ( " + methods + " )");
-                } else if (hasNormalMethodSuccess) {
-                    successCount++;
-                    System.out.println("[RESULT] SUCCESS   : " + className);
-                }
-
+                scan = BcelClassIntrospector.scanClassFile(file.toString());
             } catch (Exception ex) {
-                // 스캔 실패
                 failCount++;
                 failedFiles.add(file);
                 String backupClassName = fileName.endsWith(".class")
@@ -101,8 +47,80 @@ public class Analysis {
                         : fileName;
                 diagnosis.analyzeError(ex.getMessage(), backupClassName);
                 System.out.println("[RESULT] FAIL      : " + file.getFileName() + " ( Error: " + ex.getMessage() + " )");
+                continue;
+            }
+            String className = scan.internalName.replace('/', '.');
+
+            // 2. interface/abstract class 인지 확인
+
+            try {
+                if (projector.isInterfaceClass(session, scan.internalName) || scan.methods.isEmpty()) {
+                    System.out.println("[RESULT] INTERFACE : " + className);
+                    interfaceCount++;
+                    continue;
+                }
+            }
+
+            // 3. class load 실패 진단
+
+            catch (Exception e) {
+                diagnosis.addMissingLibrary(scan.superName, className);
+                diagnosis.analyzeError(e.getMessage(), className);
+                failCount++;
+                failedFiles.add(file);
+                System.out.println("[RESULT] FAIL      : " + className + " ( Class Hierarchy Incomplete )");
+                continue;
+            }
+
+            // 4. method 분석
+            for (Method method : scan.methods) {
+                try {
+                    if (projector.isAbstractMethod(session, scan.internalName, method.getName(), method.getSignature())) {
+                        continue;
+                    }
+
+                    // 4-1. 일반 메서드일 경우 GRAPH 분석 진행
+                    BcelBytecodeCFG.Graph instrCFG = bcel.build(scan.jClass, method, dfgMode);
+                    WalaIRProjector.Flow flow = projector.analyze(
+                            session, scan.internalName, method.getName(), method.getSignature(), instrCFG, analyzeMode);
+
+                    // 4-2. 결과 JSON file 출력
+                    if (flow != null) {
+                        Path outDir = Paths.get("out");
+                        Files.createDirectories(outDir);
+                        String qName = scan.internalName.replace('/', '.') + "." + method.getName();
+                        String safeFileName = qName.replace("<", "").replace(">", "") + ".json";
+                        JsonExporter.export(scan.internalName, method.getName(), method.getSignature(),
+                                instrCFG, flow, outDir.resolve(safeFileName), analyzeMode);
+                        hasNormalMethodSuccess = true;
+                    }
+                }
+
+                // 4-3. class 실패 진단
+                catch (Exception e) {
+                    failedMethodNames.add(method.getName());
+                    diagnosis.analyzeError(e.getMessage(), className);
+                    if (e.getMessage().contains("Class not found: L" + scan.internalName)) {
+                        diagnosis.addMissingLibrary(scan.superName.replace('/', '.'), scan.internalName);
+                    }
+                    classHasError = true;
+                }
+            }
+
+            // 5. class 분석 성공/실패 출력
+
+            if (classHasError) {
+                failCount++;
+                failedFiles.add(file);
+                String methods = String.join(", ", failedMethodNames);
+                System.out.println("[RESULT] FAIL      : " + className+ " ( " + methods + " )");
+            } else if (hasNormalMethodSuccess) {
+                successCount++;
+                System.out.println("[RESULT] SUCCESS   : " + className);
             }
         }
+
+        // 6. 최종 결과 출력
 
         System.out.println("\n" + "=".repeat(40));
         System.out.println(">>> Pass Finished Summary");

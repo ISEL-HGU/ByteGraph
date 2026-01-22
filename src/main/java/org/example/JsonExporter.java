@@ -21,7 +21,8 @@ public class JsonExporter {
         ObjectNode root = om.createObjectNode();
         root.put("method", internalClassName.replace('/', '.') + "." + methodName + methodDesc);
 
-        // 1. add nodes
+        // 1. nodes 만들기
+
         ArrayNode nodes = om.createArrayNode();
         for (Map.Entry<Integer, InstructionInfo> e : g.nodes.entrySet()) {
             InstructionInfo info = e.getValue();
@@ -34,7 +35,8 @@ public class JsonExporter {
         }
         root.set("nodes", nodes);
 
-        // 2. add edges
+        // 2. edges 만들기
+
         ObjectNode edges = om.createObjectNode();
         if (!"DEPENDENCY_ONLY".equals(analyzeMode)) {
             addIfNotEmpty(edges, "cfg", pairs(om, g.cfgEdges));
@@ -47,7 +49,8 @@ public class JsonExporter {
         }
         root.set("edges", edges);
 
-        // 3. write
+        // 3. 파일 출력
+
         om.writerWithDefaultPrettyPrinter().writeValue(out.toFile(), root);
     }
 

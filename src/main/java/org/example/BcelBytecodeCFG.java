@@ -21,19 +21,11 @@ public class BcelBytecodeCFG {
         public byte[] rawCode; // 라벨링/검증용
     }
 
-    public Graph build(String classFilePath, String methodName, String methodDesc, String dfgMode) throws Exception {
-        ClassParser cp = new ClassParser(new FileInputStream(classFilePath), classFilePath);
-        JavaClass jc = cp.parse();
-        ConstantPoolGen cpg = new ConstantPoolGen(jc.getConstantPool());
+    public Graph build(JavaClass jClass, Method target, String dfgMode) throws Exception {
 
-        Method target = null;
-        for (Method m : jc.getMethods()) {
-            if (m.getName().equals(methodName) && m.getSignature().equals(methodDesc)) {
-                target = m; break;
-            }
-        }
-        if (target == null) throw new IllegalArgumentException("Method not found");
+        // 1. bytecode 추출
 
+        ConstantPoolGen constantPool = new ConstantPoolGen(jClass.getConstantPool());
         Code code = target.getCode();
         byte[] bytes = code.getCode();
         InstructionList il = new InstructionList(bytes);
@@ -41,51 +33,49 @@ public class BcelBytecodeCFG {
         Graph g = new Graph();
         g.rawCode = bytes;
 
-        // 1) 노드 및 맵 초기화
+        // 2. node & edge 초기화
+
         for (InstructionHandle ih : ihs) {
             int offset = ih.getPosition();
             Instruction inst = ih.getInstruction();
             String hex = HexUtils.sliceToHex(bytes, offset, inst.getLength());
-            String ops = operandsToString(inst, ih, cpg);
+            String ops = operandsToString(inst, ih, constantPool);
             g.nodes.put(offset, new InstructionInfo(offset, inst.getLength(), inst.getName().toUpperCase(), ops, hex));
             g.cfgEdges.put(offset, new LinkedHashSet<>());
             g.exEdges.put(offset, new LinkedHashSet<>());
             g.dfgEdges.put(offset, new LinkedHashSet<>());
         }
 
-        // 2) 물리적 DFG 추출: 로컬 변수 슬롯 추적 (간이 Reaching Definitions)
+        // 3. 물리적 DFG 추출 : store-load instruction 매핑
+
         if (!dfgMode.equals("WALA_ONLY")) {
             Map<Integer, Integer> lastWriteToSlot = new HashMap<>(); // slotIndex -> offset
-            // 간단한 스택 시뮬레이션 (Stack-based DFG)
-
             for (InstructionHandle ih : ihs) {
                 Instruction inst = ih.getInstruction();
-                int off = ih.getPosition();
+                int offset = ih.getPosition();
 
-                // 슬롯 기반 추적: STORE 시 기록, LOAD 시 엣지 생성
                 if (inst instanceof StoreInstruction si) {
-                    lastWriteToSlot.put(si.getIndex(), off);
+                    lastWriteToSlot.put(si.getIndex(), offset);
                 } else if (inst instanceof LoadInstruction li) {
                     Integer srcOff = lastWriteToSlot.get(li.getIndex());
-                    if (srcOff != null) g.dfgEdges.get(srcOff).add(off);
+                    if (srcOff != null) g.dfgEdges.get(srcOff).add(offset);
                 }
             }
         }
 
-        // 스택 기반 추적: 값을 생산하는 명령어와 소비하는 명령어 연결
+        // 4. 물리적 DFG 추출 : 스택 기반 추적 (값을 생산하는 명령어와 소비하는 명령어 연결)
+
         if (dfgMode.equals("DATA_STACK") || dfgMode.equals("DATA_SEMANTIC")) {
             Stack<Integer> producerStack = new Stack<>();
             for (InstructionHandle ih : ihs) {
                 Instruction inst = ih.getInstruction();
                 int off = ih.getPosition();
 
-                // 소비자
-                int consume = inst.consumeStack(cpg);
+                // 4-1. 값을 소비하는 명령어
+                int consume = inst.consumeStack(constantPool);
                 for (int i = 0; i < consume && !producerStack.isEmpty(); i++) {
                     int srcOff = producerStack.pop();
-                    // DATA_STACK mode
                     if (dfgMode.equals("DATA_STACK")) g.dfgEdges.get(srcOff).add(off);
-                    // DATA_SEMANTIC mode : 유효한 흐름만 추가
                     else {
                         Instruction srcInst = il.findHandle(srcOff).getInstruction();
                         if (isMeaningfulProducer(srcInst) && isMeaningfulConsumer(inst)) {
@@ -94,45 +84,50 @@ public class BcelBytecodeCFG {
                     }
                 }
 
-                // 생산자 스택 관리
-                int produce = inst.produceStack(cpg);
+                // 4-2. 값을 생산하는 명령어
+                int produce = inst.produceStack(constantPool);
                 for (int i = 0; i < produce; i++) {
                     producerStack.push(off);
                 }
             }
         }
 
-        // 3) 정상 흐름 엣지(SEQUENCE/JUMP/IF*/SWITCH)
+        // 5. CFG 추출 : 정상 흐름 엣지
+
         for (InstructionHandle ih : ihs) {
             int off = ih.getPosition();
             Instruction inst = ih.getInstruction();
             InstructionHandle next = ih.getNext();
 
+            // 5-1. fall-through
             if (next != null &&
                     !(inst instanceof GotoInstruction) &&
                     !(inst instanceof ReturnInstruction) &&
                     !(inst instanceof ATHROW) &&
                     !(inst instanceof Select) &&
                     !(inst instanceof IfInstruction)) {
-                g.cfgEdges.get(off).add(next.getPosition());    // fall-through
+                g.cfgEdges.get(off).add(next.getPosition());
             }
+
+            // 5-2. jump/branch
             if (inst instanceof GotoInstruction) {
                 g.cfgEdges.get(off).add(((GotoInstruction) inst).getTarget().getPosition());
             }
             if (inst instanceof IfInstruction) {
                 InstructionHandle tgt = ((IfInstruction) inst).getTarget();
-                g.cfgEdges.get(off).add(tgt.getPosition());     // 참
-                if (next != null) g.cfgEdges.get(off).add(next.getPosition()); // 거짓
+                g.cfgEdges.get(off).add(tgt.getPosition());     // true
+                if (next != null) g.cfgEdges.get(off).add(next.getPosition());  // false
             }
             if (inst instanceof Select) {
                 Select sel = (Select) inst;
                 for (InstructionHandle t : sel.getTargets())
-                    g.cfgEdges.get(off).add(t.getPosition());     // case들
+                    g.cfgEdges.get(off).add(t.getPosition());     // case
                 g.cfgEdges.get(off).add(sel.getTarget().getPosition()); // default
             }
         }
 
-        // 4) 예외 핸들러 엣지: 범위 [startPC, endPC) 내 → handlerPC
+        // 6. CFG 추출 : exception flow
+
         CodeException[] handlers = code.getExceptionTable();
         if (handlers != null) {
             for (CodeException ce : handlers) {
@@ -147,6 +142,7 @@ public class BcelBytecodeCFG {
                 }
             }
         }
+
         return g;
     }
 

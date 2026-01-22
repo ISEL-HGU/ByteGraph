@@ -39,7 +39,9 @@ public class WalaSession {
     public static WalaSession init(String classpathRoot, Set<String> unblockPatterns, List<String> extraLibPaths) throws Exception {
         AnalysisScope scope = AnalysisScope.createJavaAnalysisScope();
 
-        // 1) 동적 Exclusions 설정 (파일 수정 없이 메모리에서 처리)
+        // 1. scope에서 Exclusions 설정
+
+        // 1-1. file 읽기
         File exclusionsFile = new File("exclusions.txt");
         if (exclusionsFile.exists()) {
             List<String> filteredLines = new ArrayList<>();
@@ -52,7 +54,7 @@ public class WalaSession {
                         continue;
                     }
 
-                    // unblockPatterns에 포함된 패키지라면 주석 처리된 것처럼 무시
+                    // 1-2. unblockPatterns에 포함된 패키지라면 주석 처리된 것처럼 무시
                     boolean shouldUnblock = unblockPatterns.stream().anyMatch(trimmed::contains);
                     if (shouldUnblock) {
                         filteredLines.add("# " + line + " // Dynamically unblocked");
@@ -62,24 +64,27 @@ public class WalaSession {
                 }
             }
 
-            // 메모리 상의 데이터를 기반으로 Exclusions 설정
+            // 1-3. Exclusions 설정
             String combined = String.join("\n", filteredLines);
             scope.setExclusions(new com.ibm.wala.util.config.FileOfClasses(
                     new java.io.ByteArrayInputStream(combined.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
         }
+        else System.out.println("File not found: exclusions.txt");
 
-        // 2) 기본 클래스패스 및 JDK 추가
+        // 2. primordial scope 만들기
+
         com.ibm.wala.core.util.config.AnalysisScopeReader.instance
                 .addClassPathToScope(classpathRoot, scope, ClassLoaderReference.Application);
         addPrimordialJars(scope);
 
-        // 3) 외부 라이브러리(JavaFX 등) 동적 추가
+        // 3. 외부 라이브러리 추가
+
         if (extraLibPaths != null) {
             for (String libPath : extraLibPaths) {
                 File libFile = new File(libPath);
                 if (libFile.exists()) {
+                    // 디렉토리 내 모든 jar 추가
                     if (libFile.isDirectory()) {
-                        // 디렉토리 내 모든 jar 추가
                         File[] jars = libFile.listFiles((dir, name) -> name.endsWith(".jar"));
                         if (jars != null) {
                             for (File jar : jars) {
@@ -93,30 +98,29 @@ public class WalaSession {
             }
         }
 
-        // 3) 핵심 분석 인프라 생성 (실패 시 진단 로직 작동)
+        // 4. 분석 도구 초기화
+
+        // 4-1. class 계층 구조 (CHA) 생성
         IClassHierarchy cha;
         try {
             cha = com.ibm.wala.ipa.cha.ClassHierarchyFactory.make(scope);
         } catch (Exception e) {
-            // Exception e를 추가로 인자로 넘김
             throw e;
         }
 
-        // 4) Entrypoints 및 분석 옵션 설정
-        Iterable<Entrypoint> eps =
+        // 4-2. 분석진입점 & 옵션 설정
+        Iterable<Entrypoint> entrypoints =
                 new com.ibm.wala.ipa.callgraph.impl.AllApplicationEntrypoints(scope, cha);
-        AnalysisOptions options = new AnalysisOptions(scope, eps);
-        // Reflection 설정은 유지하기로 하였으므로 기본값(또는 명시적 설정)을 사용합니다.
+        AnalysisOptions options = new AnalysisOptions(scope, entrypoints);
 
+        // 4-3. CallGraph & PointerAnalysis 생성
         AnalysisCache cache = new AnalysisCacheImpl();
-
-        // 5) CallGraph 및 PointerAnalysis 생성
         CallGraphBuilder<InstanceKey> builder =
                 Util.makeZeroCFABuilder(Language.JAVA, options, cache, cha);
-        CallGraph cg = builder.makeCallGraph(options, (MonitorUtil.IProgressMonitor) null);
+        CallGraph cg = builder.makeCallGraph(options, null);
         PointerAnalysis<InstanceKey> pa = builder.getPointerAnalysis();
 
-        // 6) ModRef 전역 계산 초기화
+        // 4-4. ModRef 전역 계산 초기화
         ModRef<InstanceKey> modRef = ModRef.make();
 
         return new WalaSession(scope, cha, cache, cg, pa, modRef);

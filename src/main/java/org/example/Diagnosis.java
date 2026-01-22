@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Diagnosis {
     private final Set<String> packagesToUnblock = new HashSet<>();
@@ -18,15 +20,13 @@ public class Diagnosis {
     public void analyzeError(String errorMessage, String currentClassName) {
         try {
             // 1. 에러 메시지에서 클래스 경로 추출
-            String fullPath = errorMessage.split("L")[1].split(" ")[0]
-                    .replace(")", "").replace(";", "").replace("L", "");
-            String foundClass = fullPath.replace("/", ".");
+            String foundClass = extractClassName(errorMessage);
 
             // 자기 자신인 경우 즉시 종료 (리포트에 추가 안 함)
-            if (foundClass.equals(currentClassName)) return;
+            if (foundClass == null || foundClass.equals(currentClassName)) return;
 
             // 2. 상위 패키지 중 exclusions.txt에 걸리는 게 있는지 확인
-            String matchedExclusion = findExcludedPackage(fullPath);
+            String matchedExclusion = findExcludedPackage(foundClass.replace(".", "/"));
             if (matchedExclusion != null) {
                 packagesToUnblock.add(matchedExclusion);
             } else {
@@ -34,6 +34,23 @@ public class Diagnosis {
                 classToMissingLibMap.computeIfAbsent(currentClassName, k -> new HashSet<>()).add(foundClass);
             }
         } catch (Exception ignored) {}
+    }
+
+    private String extractClassName(String msg) {
+        if (msg == null) return null;
+
+        Pattern classPattern = Pattern.compile("L([a-zA-Z0-9/$_]+)(?=[;>\\s]|$)");
+        Matcher matcher = classPattern.matcher(msg);
+
+        String found = null;
+        while (matcher.find()) {
+            found = matcher.group(1);
+        }
+
+        if (found != null) {
+            return found.replace("/", ".");
+        }
+        return null;
     }
 
     public void addMissingLibrary(String missingClassName, String currentClassName) {
@@ -64,8 +81,7 @@ public class Diagnosis {
                 String pattern = line.trim();
                 if (pattern.startsWith("#") || pattern.isEmpty()) continue;
 
-                String normalized = pattern.replace("\\", "");
-                String cleanPattern = normalized.replace(".*", "");
+                String cleanPattern = pattern.replace("\\", "").replace(".*", "");
 
                 if (classPath.startsWith(cleanPattern)) {
                     return pattern;

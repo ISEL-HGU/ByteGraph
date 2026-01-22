@@ -28,20 +28,12 @@ public class WalaIRProjector {
         public final Map<Integer, Set<Integer>> cdg = new LinkedHashMap<>();
     }
 
-    /** simple pair of target class & method */
-    private static class Target {
-        final IClass clazz;
-        final IMethod method;
-        Target(IClass c, IMethod m) { this.clazz = c; this.method = m; }
-    }
-
-
-
     /** main entry: orchestrates all steps */
     public Flow analyze(WalaSession session, String internalClassName, String methodName, String methodDesc,
                         BcelBytecodeCFG.Graph instrCFG, String analyzeMode) throws Exception {
 
-        // 1) Target 메서드 찾기
+        // 1. 대상 class 찾기
+
         String walaInternal = "L" + internalClassName;
         IClass clazz = session.cha.lookupClass(TypeReference.findOrCreate(com.ibm.wala.types.ClassLoaderReference.Application, walaInternal));
 
@@ -49,8 +41,10 @@ public class WalaIRProjector {
             throw new IllegalArgumentException("Class not found: " + walaInternal);
         }
 
+        // 2. 대상 method 찾기
+
+        // 2-1. 일치 method 찾기
         IMethod targetMethod = null;
-        // 1차 시도: 이름과 시그니처가 모두 일치하는지 확인
         for (IMethod m : clazz.getDeclaredMethods()) {
             if (m.getName().toString().equals(methodName) && m.getSignature().contains(methodDesc)) {
                 targetMethod = m;
@@ -58,7 +52,7 @@ public class WalaIRProjector {
             }
         }
 
-        // 2차 시도: 1차에서 실패 시 이름만으로 매칭 (시그니처 미세 불일치 대비)
+        // 2-2. 실패 시, 이름만으로 매칭
         if (targetMethod == null) {
             for (IMethod m : clazz.getDeclaredMethods()) {
                 if (m.getName().toString().equals(methodName)) {
@@ -68,26 +62,30 @@ public class WalaIRProjector {
             }
         }
 
+        // 2-3. method 없음
         if (targetMethod == null) {
             throw new IllegalArgumentException("Method not found: " + methodName);
         } else if (targetMethod.isAbstract()) { // interface
             return null;
         }
 
-        // 2) IR 및 매핑 구축
+        // 3. IR & Flow 컨테이너 초기화
+
         IR ir = session.cache.getIRFactory().makeIR(targetMethod, com.ibm.wala.ipa.callgraph.impl.Everywhere.EVERYWHERE, SSAOptions.defaultOptions());
         if (ir == null) throw new IllegalArgumentException("Cannot generate IR for: " + methodName);
+        Map<Integer, Integer> irIndexToOffset = buildIRIndexToOffset(ir);
         Flow flow = new Flow();
         initFlow(instrCFG, flow);
 
-        // BCEL에서 추출된 물리적 DFG 엣지들을 최종 결과에 병합
+        // 4. DFG 만들기
+
         instrCFG.dfgEdges.forEach((src, dsts) -> {
             flow.dfg.computeIfAbsent(src, k -> new LinkedHashSet<>()).addAll(dsts);
         });
 
-        // 3) DFG/DDG/CDG 생성
-        Map<Integer, Integer> irIndexToOffset = buildIRIndexToOffset(ir);
         buildDFG(ir, irIndexToOffset, flow);
+
+        // 5. CDG & DDG 만들기
 
         if (!"FLOW_ONLY".equals(analyzeMode)) {
             buildCDG(ir, ir.getControlFlowGraph(), irIndexToOffset, flow);
@@ -100,30 +98,31 @@ public class WalaIRProjector {
         return flow;
     }
 
-
-
     /** DFG via SSA DefUse: defOff -> useOff */
     private void buildDFG(IR ir, Map<Integer, Integer> mapping, Flow flow) {
+
+        // 1. USE offset 찾기
+
         DefUse du = new DefUse(ir);
         SSAInstruction[] ins = ir.getInstructions();
 
-        // IR의 모든 명령어를 순회하며 데이터 흐름 추적
         for (int i = 0; i < ins.length; i++) {
             SSAInstruction s = ins[i];
             if (s == null) continue;
 
-            // use
             Integer useOff = mapping.get(i);
             if (useOff == null) continue;
 
-            // def
+            // 2. Def offset 찾기
+
             for (int j = 0; j < s.getNumberOfUses(); j++) {
                 SSAInstruction def = du.getDef(s.getUse(j));
 
-                // edge 만들기
                 if (def != null) {
                     Integer defOff = mapping.get(def.iIndex());
                     if (defOff != null) {
+
+                        // 3. mapping
                         flow.dfg.computeIfAbsent(defOff, k -> new LinkedHashSet<>()).add(useOff);
                     }
                 }
@@ -138,39 +137,44 @@ public class WalaIRProjector {
      */
     private void buildDDG(WalaSession session, IMethod targetMethod, IR ir, Map<Integer, Integer> irIndexToOffset, Flow flow) throws Exception {
 
-        // 1. 현재 분석 대상 노드 찾기
+        // 1. target node 찾기
+
         CGNode node = null;
         for (CGNode n : session.cg) {
             if (n.getMethod().equals(targetMethod)) { node = n; break; }
         }
         if (node == null) return;
 
-        // 2. 현재 노드에 대한 Mod/Ref 계산
+        // 2. node의 Mod/Ref 계산
+
         if (session.modCache == null || session.modCache.isEmpty()) {
             session.modCache = session.modRef.computeMod(session.cg, session.pa);
             session.refCache = session.modRef.computeRef(session.cg, session.pa);
         }
 
         // 3. PDG 생성
+
         PDG<InstanceKey> pdg = new PDG<>(node, session.pa,
                 session.modCache, session.refCache,
                 Slicer.DataDependenceOptions.FULL, Slicer.ControlDependenceOptions.NONE,
                 null, session.cg, session.modRef);
 
         // 4. edge mapping
-        // 1) 캐시 생성
+
+        // cache
         Map<Statement, Integer> stmtCache = new HashMap<>();
 
+        // 4-1. 출발지 찾기
         for (Statement s : pdg) {
-            // 2) 출발지 오프셋 미리 계산 및 유효성 검사
             Integer srcOff = stmtCache.computeIfAbsent(s, k -> statementToOffset(k, irIndexToOffset));
             if (srcOff == null) continue;
+            // 4-2. 도착지 찾기
             Iterator<Statement> succ = pdg.getSuccNodes(s);
             while (succ.hasNext()) {
                 Statement t = succ.next();
-                // 3) 목적지 오프셋 캐시 활용
                 Integer dstOff = stmtCache.computeIfAbsent(t, k -> statementToOffset(k, irIndexToOffset));
                 if (dstOff != null) {
+                    // 4-3. edge 만들기
                     flow.ddg.computeIfAbsent(srcOff, k -> new LinkedHashSet<>()).add(dstOff);
                 }
             }
@@ -187,23 +191,24 @@ public class WalaIRProjector {
         com.ibm.wala.util.graph.dominators.Dominators<ISSABasicBlock> postdoms =
                 com.ibm.wala.util.graph.dominators.Dominators.make(ssaCfg, ssaCfg.exit());
 
-        // 2. CFG 내 모든 블록을 순회하며 제어 분기점(Control Site) 탐색
+        // 2. 제어 분기점(Control Site) 탐색
         for (ISSABasicBlock x : ssaCfg) {
             int xLastIdx = x.getLastInstructionIndex();
             if (xLastIdx < 0) continue;
             Integer xSrcOff = irIndexToOffset.get(xLastIdx);
             if (xSrcOff == null) continue;
 
-            // 3. 분기점 X의 각 후속 노드 V에 대하여 의존성 전파
+            // 3. 후속 노드 의존성 전파
             for (Iterator<ISSABasicBlock> it = ssaCfg.getSuccNodes(x); it.hasNext();) {
                 ISSABasicBlock v = it.next();
 
-                // 4. Y가 V의 도미네이터이지만 X의 도미네이터는 아닌 블록들 탐색
+                // 4. 제어 의존성 판별 (Ferrante algorithm)
                 for (ISSABasicBlock y : ssaCfg) {
                     if (postdoms.isDominatedBy(v, y) && !postdoms.isDominatedBy(x, y)) {
                         for (int i = y.getFirstInstructionIndex(); i <= y.getLastInstructionIndex(); i++) {
                             Integer yDstOff = irIndexToOffset.get(i);
                             if (yDstOff != null) {
+                                // mapping
                                 flow.cdg.computeIfAbsent(xSrcOff, k -> new LinkedHashSet<>()).add(yDstOff);
                             }
                         }
