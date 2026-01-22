@@ -29,55 +29,19 @@ public class WalaIRProjector {
     }
 
     /** main entry: orchestrates all steps */
-    public Flow analyze(WalaSession session, String internalClassName, String methodName, String methodDesc,
+    public Flow analyze(WalaSession session, IMethod targetMethod,
                         BcelBytecodeCFG.Graph instrCFG, String analyzeMode) throws Exception {
+        if (targetMethod.isAbstract()) return null;
 
-        // 1. 대상 class 찾기
-
-        String walaInternal = "L" + internalClassName;
-        IClass clazz = session.cha.lookupClass(TypeReference.findOrCreate(com.ibm.wala.types.ClassLoaderReference.Application, walaInternal));
-
-        if (clazz == null) {
-            throw new IllegalArgumentException("Class not found: " + walaInternal);
-        }
-
-        // 2. 대상 method 찾기
-
-        // 2-1. 일치 method 찾기
-        IMethod targetMethod = null;
-        for (IMethod m : clazz.getDeclaredMethods()) {
-            if (m.getName().toString().equals(methodName) && m.getSignature().contains(methodDesc)) {
-                targetMethod = m;
-                break;
-            }
-        }
-
-        // 2-2. 실패 시, 이름만으로 매칭
-        if (targetMethod == null) {
-            for (IMethod m : clazz.getDeclaredMethods()) {
-                if (m.getName().toString().equals(methodName)) {
-                    targetMethod = m;
-                    break;
-                }
-            }
-        }
-
-        // 2-3. method 없음
-        if (targetMethod == null) {
-            throw new IllegalArgumentException("Method not found: " + methodName);
-        } else if (targetMethod.isAbstract()) { // interface
-            return null;
-        }
-
-        // 3. IR & Flow 컨테이너 초기화
+        // 1. IR & Flow 컨테이너 초기화
 
         IR ir = session.cache.getIRFactory().makeIR(targetMethod, com.ibm.wala.ipa.callgraph.impl.Everywhere.EVERYWHERE, SSAOptions.defaultOptions());
-        if (ir == null) throw new IllegalArgumentException("Cannot generate IR for: " + methodName);
+        if (ir == null) throw new IllegalArgumentException("Cannot generate IR for: " + targetMethod.getName());
         Map<Integer, Integer> irIndexToOffset = buildIRIndexToOffset(ir);
         Flow flow = new Flow();
         initFlow(instrCFG, flow);
 
-        // 4. DFG 만들기
+        // 2. DFG 만들기
 
         instrCFG.dfgEdges.forEach((src, dsts) -> {
             flow.dfg.computeIfAbsent(src, k -> new LinkedHashSet<>()).addAll(dsts);
@@ -85,7 +49,7 @@ public class WalaIRProjector {
 
         buildDFG(ir, irIndexToOffset, flow);
 
-        // 5. CDG & DDG 만들기
+        // 3. CDG & DDG 만들기
 
         if (!"FLOW_ONLY".equals(analyzeMode)) {
             buildCDG(ir, ir.getControlFlowGraph(), irIndexToOffset, flow);
@@ -103,27 +67,27 @@ public class WalaIRProjector {
 
         // 1. USE offset 찾기
 
-        DefUse du = new DefUse(ir);
-        SSAInstruction[] ins = ir.getInstructions();
+        DefUse defUse = new DefUse(ir);
+        SSAInstruction[] ssaList = ir.getInstructions();
 
-        for (int i = 0; i < ins.length; i++) {
-            SSAInstruction s = ins[i];
-            if (s == null) continue;
+        for (int i = 0; i < ssaList.length; i++) {
+            SSAInstruction ssa = ssaList[i];
+            if (ssa == null) continue;
 
-            Integer useOff = mapping.get(i);
-            if (useOff == null) continue;
+            Integer useOffset = mapping.get(i);
+            if (useOffset == null) continue;
 
             // 2. Def offset 찾기
 
-            for (int j = 0; j < s.getNumberOfUses(); j++) {
-                SSAInstruction def = du.getDef(s.getUse(j));
+            for (int j = 0; j < ssa.getNumberOfUses(); j++) {
+                SSAInstruction def = defUse.getDef(ssa.getUse(j));
 
                 if (def != null) {
                     Integer defOff = mapping.get(def.iIndex());
                     if (defOff != null) {
 
                         // 3. mapping
-                        flow.dfg.computeIfAbsent(defOff, k -> new LinkedHashSet<>()).add(useOff);
+                        flow.dfg.computeIfAbsent(defOff, k -> new LinkedHashSet<>()).add(useOffset);
                     }
                 }
             }
@@ -193,10 +157,10 @@ public class WalaIRProjector {
 
         // 2. 제어 분기점(Control Site) 탐색
         for (ISSABasicBlock x : ssaCfg) {
-            int xLastIdx = x.getLastInstructionIndex();
-            if (xLastIdx < 0) continue;
-            Integer xSrcOff = irIndexToOffset.get(xLastIdx);
-            if (xSrcOff == null) continue;
+            int lastIndex = x.getLastInstructionIndex();
+            if (lastIndex < 0) continue;
+            Integer srcOffset = irIndexToOffset.get(lastIndex);
+            if (srcOffset == null) continue;
 
             // 3. 후속 노드 의존성 전파
             for (Iterator<ISSABasicBlock> it = ssaCfg.getSuccNodes(x); it.hasNext();) {
@@ -206,10 +170,10 @@ public class WalaIRProjector {
                 for (ISSABasicBlock y : ssaCfg) {
                     if (postdoms.isDominatedBy(v, y) && !postdoms.isDominatedBy(x, y)) {
                         for (int i = y.getFirstInstructionIndex(); i <= y.getLastInstructionIndex(); i++) {
-                            Integer yDstOff = irIndexToOffset.get(i);
-                            if (yDstOff != null) {
+                            Integer dstOffset = irIndexToOffset.get(i);
+                            if (dstOffset != null) {
                                 // mapping
-                                flow.cdg.computeIfAbsent(xSrcOff, k -> new LinkedHashSet<>()).add(yDstOff);
+                                flow.cdg.computeIfAbsent(srcOffset, k -> new LinkedHashSet<>()).add(dstOffset);
                             }
                         }
                     }
@@ -256,22 +220,7 @@ public class WalaIRProjector {
         } catch (Exception e) { return false; }
     }
 
-    public boolean isAbstractMethod(WalaSession session, String internalClassName, String methodName, String methodDesc) {
-        try {
-            IClass clazz = getClassFromSession(session, internalClassName);
-            if (clazz == null) return false;
-
-            for (IMethod m : clazz.getDeclaredMethods()) {
-                // Selector를 이용해 이름과 파라미터 타입이 일치하는지 더 정확히 확인
-                if (m.getName().toString().equals(methodName)) {
-                    return m.isAbstract();
-                }
-            }
-        } catch (Exception e) { return false; }
-        return false;
-    }
-
-    private IClass getClassFromSession(WalaSession session, String internalClassName) {
+    public IClass getClassFromSession(WalaSession session, String internalClassName) {
         String walaInternal = internalClassName.startsWith("L") ? internalClassName : "L" + internalClassName;
         return session.cha.lookupClass(TypeReference.findOrCreate(ClassLoaderReference.Application, walaInternal));
     }

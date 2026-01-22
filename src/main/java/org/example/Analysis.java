@@ -1,5 +1,10 @@
 package org.example;
 
+import com.ibm.wala.classLoader.IClass;
+import com.ibm.wala.classLoader.IMethod;
+import com.ibm.wala.classLoader.Language;
+import com.ibm.wala.core.util.strings.Atom;
+import com.ibm.wala.types.Selector;
 import org.apache.bcel.classfile.Method;
 
 import java.nio.file.Files;
@@ -35,8 +40,9 @@ public class Analysis {
             List<String> failedMethodNames = new ArrayList<>();
             BcelClassIntrospector.ClassScan scan;
 
-            // 1. class scan
+            // 1. class 찾기
 
+            // 1-1. class scan : BCEL
             try {
                 scan = BcelClassIntrospector.scanClassFile(file.toString());
             } catch (Exception ex) {
@@ -51,8 +57,7 @@ public class Analysis {
             }
             String className = scan.internalName.replace('/', '.');
 
-            // 2. interface/abstract class 인지 확인
-
+            // 1-2. interface/abstract class 확인
             try {
                 if (projector.isInterfaceClass(session, scan.internalName) || scan.methods.isEmpty()) {
                     System.out.println("[RESULT] INTERFACE : " + className);
@@ -61,8 +66,7 @@ public class Analysis {
                 }
             }
 
-            // 3. class load 실패 진단
-
+            // 1-3. class load 실패 진단
             catch (Exception e) {
                 diagnosis.addMissingLibrary(scan.superName, className);
                 diagnosis.analyzeError(e.getMessage(), className);
@@ -72,19 +76,34 @@ public class Analysis {
                 continue;
             }
 
-            // 4. method 분석
+            // 1-4. WALA class 찾기
+            IClass walaClass = projector.getClassFromSession(session, scan.internalName);
+            if (walaClass == null) {
+                diagnosis.addMissingLibrary(scan.superName, className);
+                diagnosis.analyzeError("Class not found: L" + scan.internalName, className);
+                failCount++;
+                failedFiles.add(file);
+                System.out.println("[RESULT] FAIL : " + className + " ( Class Hierarchy Incomplete )");
+                continue;
+            }
+
+            // 2. method 분석
+
             for (Method method : scan.methods) {
                 try {
-                    if (projector.isAbstractMethod(session, scan.internalName, method.getName(), method.getSignature())) {
-                        continue;
-                    }
+                    IMethod walaMethod = walaClass.getMethod(new Selector(
+                            Atom.findOrCreateUnicodeAtom(method.getName()),
+                            com.ibm.wala.types.Descriptor.findOrCreateUTF8(Language.JAVA, method.getSignature())
+                    ));
 
-                    // 4-1. 일반 메서드일 경우 GRAPH 분석 진행
+                    if (walaMethod == null || walaMethod.isAbstract()) continue;
+
+                    // 2-1. 일반 메서드일 경우 GRAPH 분석 진행
                     BcelBytecodeCFG.Graph instrCFG = bcel.build(scan.jClass, method, dfgMode);
                     WalaIRProjector.Flow flow = projector.analyze(
-                            session, scan.internalName, method.getName(), method.getSignature(), instrCFG, analyzeMode);
+                            session, walaMethod, instrCFG, analyzeMode);
 
-                    // 4-2. 결과 JSON file 출력
+                    // 2-2. 결과 JSON file 출력
                     if (flow != null) {
                         Path outDir = Paths.get("out");
                         Files.createDirectories(outDir);
@@ -96,7 +115,7 @@ public class Analysis {
                     }
                 }
 
-                // 4-3. class 실패 진단
+                // 2-3. class 실패 진단
                 catch (Exception e) {
                     failedMethodNames.add(method.getName());
                     diagnosis.analyzeError(e.getMessage(), className);
@@ -107,7 +126,7 @@ public class Analysis {
                 }
             }
 
-            // 5. class 분석 성공/실패 출력
+            // 3. class 분석 성공/실패 출력
 
             if (classHasError) {
                 failCount++;
@@ -120,7 +139,7 @@ public class Analysis {
             }
         }
 
-        // 6. 최종 결과 출력
+        // 4. 최종 결과 출력
 
         System.out.println("\n" + "=".repeat(40));
         System.out.println(">>> Pass Finished Summary");

@@ -150,12 +150,12 @@ public class BcelBytecodeCFG {
     }
 
     private boolean canThrowException(Instruction inst) {
-        // 1. BCEL이 공식적으로 예외 가능하다고 정의한 명령어
+        // BCEL이 공식적으로 예외 가능하다고 정의한 명령어
         if (inst instanceof ExceptionThrower) {
             return true;
         }
 
-        // 2. 예외를 던지지 않는 명령어들
+        // 예외를 던지지 않는 명령어들
         if (inst instanceof LocalVariableInstruction ||     // iload, istore
                 inst instanceof StackInstruction ||         // pop, dup, swap
                 inst instanceof BranchInstruction ||        // goto, ifxx
