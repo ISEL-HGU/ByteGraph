@@ -137,13 +137,41 @@ public class BcelBytecodeCFG {
                 for (InstructionHandle ih : ihs) {
                     int off = ih.getPosition();
                     if (off >= startPC && off < endPC) {
-                        g.exEdges.get(off).add(handlerPC);
+                        Instruction inst = ih.getInstruction();
+                        if (canThrowException(inst)) {
+                            g.exEdges.get(off).add(handlerPC);
+                        }
                     }
                 }
             }
         }
 
         return g;
+    }
+
+    private boolean canThrowException(Instruction inst) {
+        // 1. BCEL이 공식적으로 예외 가능하다고 정의한 명령어
+        if (inst instanceof ExceptionThrower) {
+            return true;
+        }
+
+        // 2. 예외를 던지지 않는 명령어들
+        if (inst instanceof LocalVariableInstruction ||     // iload, istore
+                inst instanceof StackInstruction ||         // pop, dup, swap
+                inst instanceof BranchInstruction ||        // goto, ifxx
+                inst instanceof ArithmeticInstruction ||    // iadd, fsub
+                inst instanceof ConversionInstruction ||    // i2l, f2i
+                inst instanceof ReturnInstruction) {        // ireturn, return
+
+            // 산술 연산 중 0으로 나눌 수 있는 idiv, ldiv, irem, lrem
+            if (inst instanceof IDIV || inst instanceof LDIV ||
+                    inst instanceof IREM || inst instanceof LREM) {
+                return true;
+            }
+            return false;
+        }
+
+        return true;
     }
 
     private static boolean isMeaningfulProducer(Instruction inst) {
