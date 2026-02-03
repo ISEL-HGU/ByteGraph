@@ -33,11 +33,12 @@ public class WalaIRProjector {
                         BcelBytecodeCFG.Graph instrCFG, String analyzeMode) throws Exception {
         if (targetMethod.isAbstract()) return null;
 
-        // 1. IR & Flow 컨테이너 초기화
+        // 1. IR mapping table
 
         IR ir = session.cache.getIRFactory().makeIR(targetMethod, com.ibm.wala.ipa.callgraph.impl.Everywhere.EVERYWHERE, SSAOptions.defaultOptions());
         if (ir == null) throw new IllegalArgumentException("Cannot generate IR for: " + targetMethod.getName());
-        Map<Integer, Integer> irIndexToOffset = buildIRIndexToOffset(ir);
+        Map<Integer, Set<Integer>> irIndexToOffset = buildIRIndexToOffset(ir, instrCFG);
+
         Flow flow = new Flow();
         initFlow(instrCFG, flow);
 
@@ -52,8 +53,8 @@ public class WalaIRProjector {
         // 3. CDG & DDG 만들기
 
         if (!"FLOW_ONLY".equals(analyzeMode)) {
-            buildCDG(ir, ir.getControlFlowGraph(), irIndexToOffset, flow);
-            buildDDG(session, targetMethod, ir, irIndexToOffset, flow);
+            buildCDG(ir.getControlFlowGraph(), irIndexToOffset, flow);
+            buildDDG(session, targetMethod, irIndexToOffset, flow);
             flow.dfg.forEach((src, dsts) -> {
                 flow.ddg.computeIfAbsent(src, k -> new LinkedHashSet<>()).addAll(dsts);
             });
@@ -63,7 +64,7 @@ public class WalaIRProjector {
     }
 
     /** DFG via SSA DefUse: defOff -> useOff */
-    private void buildDFG(IR ir, Map<Integer, Integer> mapping, Flow flow) {
+    private void buildDFG(IR ir, Map<Integer, Set<Integer>> mapping, Flow flow) {
 
         // 1. USE offset 찾기
 
@@ -74,7 +75,7 @@ public class WalaIRProjector {
             SSAInstruction ssa = ssaList[i];
             if (ssa == null) continue;
 
-            Integer useOffset = mapping.get(i);
+            Set<Integer> useOffset = mapping.get(i);
             if (useOffset == null) continue;
 
             // 2. Def offset 찾기
@@ -83,11 +84,15 @@ public class WalaIRProjector {
                 SSAInstruction def = defUse.getDef(ssa.getUse(j));
 
                 if (def != null) {
-                    Integer defOff = mapping.get(def.iIndex());
+                    Set<Integer> defOff = mapping.get(def.iIndex());
                     if (defOff != null) {
 
                         // 3. mapping
-                        flow.dfg.computeIfAbsent(defOff, k -> new LinkedHashSet<>()).add(useOffset);
+                        for (Integer dOff : defOff) {
+                            for (Integer uOff : useOffset) {
+                                flow.dfg.computeIfAbsent(dOff, k -> new LinkedHashSet<>()).add(uOff);
+                            }
+                        }
                     }
                 }
             }
@@ -99,7 +104,7 @@ public class WalaIRProjector {
      * Builds a simple Zero-CFA CallGraph & PointerAnalysis, then constructs an intraprocedural PDG
      * and projects DATA dependences to bytecode offsets.
      */
-    private void buildDDG(WalaSession session, IMethod targetMethod, IR ir, Map<Integer, Integer> irIndexToOffset, Flow flow) throws Exception {
+    private void buildDDG(WalaSession session, IMethod targetMethod, Map<Integer, Set<Integer>> irIndexToOffset, Flow flow) throws Exception {
 
         // 1. target node 찾기
 
@@ -125,21 +130,25 @@ public class WalaIRProjector {
 
         // 4. edge mapping
 
-        // cache
-        Map<Statement, Integer> stmtCache = new HashMap<>();
-
         // 4-1. 출발지 찾기
-        for (Statement s : pdg) {
-            Integer srcOff = stmtCache.computeIfAbsent(s, k -> statementToOffset(k, irIndexToOffset));
+        Map<Statement, Integer> stmtCache = new HashMap<>();
+        for (Statement stmt1 : pdg) {
+            Set<Integer> srcOff = statementToOffset(stmt1, irIndexToOffset);
             if (srcOff == null) continue;
+
             // 4-2. 도착지 찾기
-            Iterator<Statement> succ = pdg.getSuccNodes(s);
+            Iterator<Statement> succ = pdg.getSuccNodes(stmt1);
             while (succ.hasNext()) {
-                Statement t = succ.next();
-                Integer dstOff = stmtCache.computeIfAbsent(t, k -> statementToOffset(k, irIndexToOffset));
+                Statement stmt2 = succ.next();
+                Set<Integer> dstOff = statementToOffset(stmt2, irIndexToOffset);
                 if (dstOff != null) {
+
                     // 4-3. edge 만들기
-                    flow.ddg.computeIfAbsent(srcOff, k -> new LinkedHashSet<>()).add(dstOff);
+                    for (Integer sOff : srcOff) {
+                        for (Integer dOff : dstOff) {
+                            flow.ddg.computeIfAbsent(sOff, k -> new LinkedHashSet<>()).add(dOff);
+                        }
+                    }
                 }
             }
         }
@@ -150,30 +159,30 @@ public class WalaIRProjector {
      *  method name kept short: computeCDG(...)
      * ========================= */
 
-    private void buildCDG(IR ir, SSACFG ssaCfg, Map<Integer, Integer> irIndexToOffset, Flow flow) {
-        // 1. Post-Dominator 계산: CFG와 Exit 블록을 넘겨 역방향 도미네이터 계산
+    private void buildCDG(SSACFG ssaCfg, Map<Integer, Set<Integer>> irIndexToOffset, Flow flow) {
         com.ibm.wala.util.graph.dominators.Dominators<ISSABasicBlock> postdoms =
                 com.ibm.wala.util.graph.dominators.Dominators.make(ssaCfg, ssaCfg.exit());
 
-        // 2. 제어 분기점(Control Site) 탐색
         for (ISSABasicBlock x : ssaCfg) {
-            int lastIndex = x.getLastInstructionIndex();
-            if (lastIndex < 0) continue;
-            Integer srcOffset = irIndexToOffset.get(lastIndex);
-            if (srcOffset == null) continue;
+            int last = x.getLastInstructionIndex();
+            if (last < 0) continue;
 
-            // 3. 후속 노드 의존성 전파
+            // 1. src는 블록의 마지막 SSA 인덱스에서 '가장 큰 오프셋' 하나만 선택
+            Set<Integer> srcOffsets = irIndexToOffset.get(last);
+            if (srcOffsets == null || srcOffsets.isEmpty()) continue;
+            Integer realBranchOffset = Collections.max(srcOffsets);
+
             for (Iterator<ISSABasicBlock> it = ssaCfg.getSuccNodes(x); it.hasNext();) {
                 ISSABasicBlock v = it.next();
-
-                // 4. 제어 의존성 판별 (Ferrante algorithm)
                 for (ISSABasicBlock y : ssaCfg) {
                     if (postdoms.isDominatedBy(v, y) && !postdoms.isDominatedBy(x, y)) {
+                        // 2. dst 블록의 모든 SSA 인덱스를 순회
                         for (int i = y.getFirstInstructionIndex(); i <= y.getLastInstructionIndex(); i++) {
-                            Integer dstOffset = irIndexToOffset.get(i);
-                            if (dstOffset != null) {
-                                // mapping
-                                flow.cdg.computeIfAbsent(srcOffset, k -> new LinkedHashSet<>()).add(dstOffset);
+                            Set<Integer> dstOffsets = irIndexToOffset.get(i);
+                            if (dstOffsets != null) {
+                                for (Integer dOff : dstOffsets) {
+                                    flow.cdg.computeIfAbsent(realBranchOffset, k -> new LinkedHashSet<>()).add(dOff);
+                                }
                             }
                         }
                     }
@@ -191,22 +200,47 @@ public class WalaIRProjector {
         }
     }
 
-    private Map<Integer, Integer> buildIRIndexToOffset(IR ir) {
-        Map<Integer, Integer> map = new HashMap<>();
-        if (ir.getMethod() instanceof IBytecodeMethod byteMethod) {
-            SSAInstruction[] ins = ir.getInstructions();
-            for (int i = 0; i < ins.length; i++) {
-                try {
-                    int bcIndex = byteMethod.getBytecodeIndex(i);
-                    if (bcIndex >= 0) map.put(i, bcIndex);
-                } catch (Exception ignore) {}
-            }
+    /** build mapping table */
+    private Map<Integer, Set<Integer>> buildIRIndexToOffset(IR ir, BcelBytecodeCFG.Graph instrCFG) {
+        Map<Integer, Set<Integer>> map = new HashMap<>();
+        if (!(ir.getMethod() instanceof IBytecodeMethod bm)) return map;
+
+        // offset 목록
+        List<Integer> sortedOffsets = new ArrayList<>(instrCFG.nodes.keySet());
+        Collections.sort(sortedOffsets);
+
+        // IR 명령어마다 startPC부터 다음 SSA 명령어가 나타나기 전까지의 노드 찾기
+        SSAInstruction[] insts = ir.getInstructions();
+        for (int i = 0; i < insts.length; i++) {
+            try {
+                int startPC = bm.getBytecodeIndex(i);
+                if (startPC < 0) continue;
+                int currentOffsetIdx = Collections.binarySearch(sortedOffsets, startPC);
+                if (currentOffsetIdx < 0) continue;
+
+                // 시작 offset (1:1 mapping)
+                map.computeIfAbsent(i, k -> new TreeSet<>()).add(startPC);
+
+                // 이후 offset들이 다음 SSA의 시작점이 아닌지 검사
+                for (int j = currentOffsetIdx + 1; j < sortedOffsets.size(); j++) {
+                    int nextOffset = sortedOffsets.get(j);
+                    try {
+                        int ssaIdxOfNext = bm.getInstructionIndex(nextOffset);
+                        if (ssaIdxOfNext >= 0 && ssaIdxOfNext != i) {
+                            break;
+                        }
+                    } catch (Exception e) {}
+
+                    // mapping
+                    map.get(i).add(nextOffset);
+                }
+            } catch (Exception ignore) {}
         }
         return map;
     }
 
     /** Helper: map PDG Statement → IR index → bytecode offset. */
-    private Integer statementToOffset(Statement st, Map<Integer, Integer> mapping) {
+    private Set<Integer> statementToOffset(Statement st, Map<Integer, Set<Integer>> mapping) {
         if (st instanceof NormalStatement ns) return mapping.get(ns.getInstruction().iIndex());
         if (st instanceof ParamCaller pc) return mapping.get(pc.getInstruction().iIndex());
         if (st instanceof NormalReturnCaller rc) return mapping.get(rc.getInstruction().iIndex());
