@@ -16,7 +16,6 @@
 ## 3. 환경 설정 (Prerequisites)
 
 *   **java Runtime:** 본 도구는 Java 21 환경에서 구현 및 실행을 권장합니다.
-*   **환경 변수:** JDK 8 라이브러리(rt.jar, jce.jar)의 정밀 분석을 위해 JAVA8_HOME 경로 설정이 반드시 필요합니다.
 *   **빌드 도구:** 의존성 관리 및 빌드를 위해 Gradle을 사용합니다.
 
 ## 4. 사용 방법 (Usage)
@@ -24,11 +23,11 @@
 
 #### 실행 예시 (Windows 환경)
 
-run-bytegraph.bat "<분석 대상 경로>" "<jdk 8 경로>"
+run-bytegraph.bat "<분석 대상 경로>" 
 
 #### 실행 예시 (Mac/Linux 환경)
 
-run-bytegraph.sh "<분석 대상 경로>" "<jdk 8 경로>"
+run-bytegraph.sh "<분석 대상 경로>" 
 
 
 ## 5. 출력 데이터 구조 (Output Format)
